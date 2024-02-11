@@ -29,43 +29,32 @@ class View:
     async def say(self, message: str) -> None:
         queue = asyncio.Queue()
 
-        async def on_data(chunk):
+        async def on_data(chunk) -> None:
             nonlocal queue
             await queue.put(chunk)
 
-        async def on_close(value):
+        async def on_close(value) -> None:
             nonlocal queue
             await queue.put(value)
-
-        async def play_audio():
-            nonlocal queue
-
-            while True:
-                chunk = await queue.get()
-
-                if chunk is None:
-                    queue.task_done()
-                    break
-
-                await fwk.play_opus(chunk, 'ogg')
-                time.sleep(0.1)
-
-            queue.task_done()
 
         audio_stream = fwk.tts(self.tts_model, self.tts_voice, message)
         audio_stream.on('data', on_data)
         audio_stream.on('close', on_close)
 
-        fetch_task = audio_stream.task
-        play_task = asyncio.create_task(play_audio())
+        while True:
+            chunk = await queue.get()
 
-        await fetch_task
-        await play_task
+            if chunk is None:
+                return
 
-    async def hear(self) -> fwk.Stream:
+            fwk.play_audio(chunk, 'ogg')
+            time.sleep(0.1)
+
+            queue.task_done()
+
+    def hear(self) -> fwk.Stream:
         frame_rate = 16000
         num_channels = 1
-        chunk_size = 1024
         activation_buffer_size = 32 * 1024  # 32 KB
         record_buffer_size = 10 * 1024 * 1024  # 10 MB
         activation_buffer = bytearray()
@@ -74,17 +63,17 @@ class View:
         is_triggered = False
         i = 0
 
-        record_process = fwk.record_audio(self.input_device, frame_rate, num_channels, chunk_size)
+        record_process = fwk.record_audio(self.input_device, frame_rate, num_channels)
         output_stream = fwk.Stream()
 
         # Commits the record
         async def commit(input_bytes: bytes) -> None:
             nonlocal i
 
+            self._log(f'Commited x{i + 1}')
             await output_stream.write(input_bytes)
             record_buffer.clear()
 
-            self._log(f'Commited x{i+1}')
             i += 1
 
         # Analyzes the record
@@ -100,6 +89,7 @@ class View:
             if len(activation_buffer) >= activation_buffer_size:
                 activation_buffer.clear()
             if len(record_buffer) >= record_buffer_size:
+                self._log('Warning: the record buffer has reached its limit')
                 record_buffer.clear()
 
             # Pushing the chunk to the buffers
@@ -113,19 +103,20 @@ class View:
 
             # Doing some checks
             if is_triggered and not old_is_triggered:
-                self._log(f'Hear you x{i+1}')
+                self._log(f'Hear you x{i + 1}')
             if not is_triggered and old_is_triggered:
                 await commit(record_buffer)
             if not is_triggered:
                 record_buffer.clear()
 
-        async def analyzing_process() -> None:
+        async def hearing_process() -> None:
             try:
                 while True:
                     # Reading the stream
                     chunk = record_process.stdout.read(1024)
                     if not chunk:
-                        break
+                        await output_stream.close()
+                        return
 
                     # Analyzing the chunk
                     await asyncio.create_task(analyze(chunk))
@@ -133,7 +124,7 @@ class View:
                 record_process.kill()
                 await output_stream.error(e)
 
-        analyzing_task = asyncio.create_task(analyzing_process())
-        output_stream.set(analyzing_task)
+        hearing_task = asyncio.create_task(hearing_process())
+        output_stream.task(hearing_task)
 
         return output_stream

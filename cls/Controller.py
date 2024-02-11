@@ -1,6 +1,9 @@
 import asyncio
 import builtins
+import time
+
 import fwk
+from asyncio import Future
 from .View import View
 
 
@@ -18,8 +21,8 @@ class Controller:
     def _log(self, message: str) -> None:
         print(f'(c) {message}')
 
-    async def start(self):
-        output_stream = await self.view.hear()
+    async def start(self) -> None:
+        output_stream = self.view.hear()
         i = 0
 
         async def on_data(data) -> None:
@@ -27,24 +30,34 @@ class Controller:
 
             wav_file = fwk.pcm_to_wav(data, 16000, 1)
 
-            with open(f'tmp/output_{i+1}.wav', 'wb') as output_file:
+            template = f'tmp/output_{i+1}.wav'
+            with open(template, 'wb') as output_file:
                 output_file.write(wav_file.getvalue())
 
-            self._log(f'Saved x{i+1}')
+            self._log(f'Working on... x{i+1}')
+            transcription = fwk.stt('whisper-1', template)
+
+            self._log(f'You said: {transcription}')
+            await self.view.say(transcription)
+
             i += 1
+
+        async def on_close() -> None:
+            pass
 
         async def on_error(e: BaseException) -> None:
             match type(e):
                 case builtins.KeyboardInterrupt | asyncio.CancelledError:
                     self._log(f'Interrupted by user')
                 case builtins.Warning:
-                    self._log(f'Warning: {e.__traceback__}')
+                    self._log(f'Warning: {e}')
                 case builtins.Exception:
-                    self._log(f'Unexpected Error: {e.__traceback__}')
+                    self._log(f'Unexpected Error: {e}')
                 case builtins.BaseException | _:
-                    self._log(f'Unexpected: {e.__traceback__}')
+                    self._log(f'Unexpected: {e}')\
 
         output_stream.on('data', on_data)
+        output_stream.on('close', on_close)
         output_stream.on('error', on_error)
 
-        await output_stream.task
+        await output_stream.task_coroutine
