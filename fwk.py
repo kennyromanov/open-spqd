@@ -1,29 +1,21 @@
 import os
 import subprocess
 import math
-import numpy
 import asyncio
 import typing
 import pydub
 import wave
 import sounddevice as sd
+import numpy as np
 import colorama
 import redis
 import openai
-import traceback
 from io import BytesIO
 from typing import List
 from colorama import Fore, Style
 from dotenv import load_dotenv
-from argparse import ArgumentParser
 
 # Third-Parties
-
-parser = ArgumentParser()
-parser.add_argument("--voice", default="-")
-parser.add_argument("--sensitivity", default="-")
-parser.add_argument("--input", default="-")
-args = parser.parse_args()
 
 load_dotenv()
 
@@ -130,7 +122,7 @@ def log_error(e: Exception) -> None:
 def default_output(strict: bool = False) -> typing.Any:
     try:
         device = sd.query_devices(kind='output')
-        return device
+        return device['index']
     except Exception as e:
         if strict:
             raise e
@@ -139,7 +131,7 @@ def default_output(strict: bool = False) -> typing.Any:
 
 def record_audio(
         input_device: str | int,
-        frame_rate: int = 16000,
+        samplerate: int = 16000,
         num_channels: int = 1
 ) -> subprocess.Popen:
     command = [
@@ -147,7 +139,7 @@ def record_audio(
         '-f', 'avfoundation',
         '-i', f':{input_device}',
         '-ac', f'{num_channels}',
-        '-ar', f'{frame_rate}',
+        '-ar', f'{samplerate}',
         '-f', 's16le',
         '-acodec', 'pcm_s16le',
         '-'
@@ -156,15 +148,15 @@ def record_audio(
     return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-def play_audio(input_bytes: bytes, format_name: str, output_device: str | int = None) -> None:
+def play_audio(input_bytes: bytes, format_name: str, samplerate=48000, output_device: str | int = None) -> None:
     if not output_device:
-        output_device = default_output()['index']
+        output_device = default_output()
 
     # Decoding the audio
     bytes_pcm = to_pcm(input_bytes, format_name)
-    array_pcm = numpy.frombuffer(bytes_pcm, dtype=numpy.int32)
+    array_pcm = np.frombuffer(bytes_pcm, dtype=np.int32)
 
-    sd.play(array_pcm, samplerate=48000, device=output_device)
+    sd.play(data=array_pcm, samplerate=samplerate, device=output_device)
     sd.wait()
 
 
@@ -203,14 +195,14 @@ def to_pcm(input_bytes: bytes, format_name: str) -> bytes:
     return bytes_pcm
 
 
-def pcm_to_wav(input_bytes: bytes, frame_rate: int, num_channels: int) -> BytesIO:
+def pcm_to_wav(input_bytes: bytes, samplerate: int, num_channels: int) -> BytesIO:
     wav_io = BytesIO()
 
     # Encoding the audio
     with wave.open(wav_io, 'wb') as wav_file:
         wav_file.setnchannels(num_channels)
         wav_file.setsampwidth(2)
-        wav_file.setframerate(frame_rate)
+        wav_file.setframerate(samplerate)
         wav_file.writeframes(input_bytes)
     wav_io.seek(0)
 
