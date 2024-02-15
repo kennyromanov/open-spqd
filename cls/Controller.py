@@ -1,7 +1,10 @@
 import asyncio
 import builtins
 import numpy as np
+import random
+import typing
 import fwk
+from asyncio import Future
 from .View import View
 
 
@@ -23,15 +26,72 @@ class Controller:
             stt_samplerate=self.input_samplerate,
             stt_num_channels=self.input_num_channels,
         )
+        self.pcm_format = np.int32
+        self.hearing_stream = None
+        self.speaking_stream = None
+        self.control_stream = None
+
+        self.audio_park = {
+            'ah': [
+                self.audio_gen('А?'),
+                self.audio_gen('А?'),
+            ],
+            'what': [
+                self.audio_gen('Что?'),
+                self.audio_gen('Что?'),
+            ],
+            'yes': [
+                self.audio_gen('Да-да.'),
+                self.audio_gen('Да-да.'),
+            ],
+            'please': [
+                self.audio_gen('Говорите.'),
+                self.audio_gen('Говорите.'),
+            ],
+        }
 
     def _log(self, message: str) -> None:
         print(f'(c) {message}')
 
+    async def audio_play(self, input_bytes: bytes, format_name: str = 'ogg') -> None:
+        bytes_pcm = fwk.to_pcm(input_bytes, format_name)
+        array_pcm = np.frombuffer(bytes_pcm, dtype=self.pcm_format)
+        await self.speaking_stream.write(array_pcm)
+
+    def audio_tts(self, message: str) -> None:
+        tts_stream = self.view.tts(message)
+        tts_stream.on('data', self.audio_play)
+
+    def audio_filler(self) -> None:
+        random_cat = random.choice(list(self.audio_park.items()))
+        random_word = random.choice(random_cat)
+        self.audio_play(random_word)
+
+    def audio_gen(self, message: str) -> Future[bytes]:
+        future = Future()
+        result = bytearray()
+
+        async def on_data(chunk):
+            result.extend(chunk)
+
+        async def on_close(value):
+            future.set_result(result)
+
+        audio_stream = self.view.tts(message)
+        audio_stream.on('data', on_data)
+        audio_stream.on('close', on_close)
+
+        return future
+
     async def start(self) -> None:
-        pcm_format = np.int32
-        speaking_stream = self.view.speak()
-        hearing_stream = self.view.hear()
+        self.hearing_stream = self.view.hear()
+        self.speaking_stream = self.view.speak()
+        self.control_stream = self.view.control()
+        is_speaking = False
         i = 0
+
+        async def to_view(data: typing.Any) -> None:
+            await self.control_stream.info('c', 'v', data)
 
         async def on_data(data) -> None:
             nonlocal i
@@ -42,7 +102,6 @@ class Controller:
             with open(template, 'wb') as output_file:
                 output_file.write(wav_file.getvalue())
 
-            self._log(f'Working on... x{i+1}')
             transcription = fwk.stt('whisper-1', template)
 
             self._log(f'You said: {transcription}')
@@ -50,16 +109,43 @@ class Controller:
                 i += 1
                 return
 
-            tts_stream = self.view.tts(transcription)
+            async def answering_on_data(delta) -> None:
+                if delta.type != 'chunk':
+                    return
 
-            async def tts_on_data(chunk) -> None:
-                bytes_pcm = fwk.to_pcm(chunk, 'ogg')
-                array_pcm = np.frombuffer(bytes_pcm, dtype=pcm_format)
-                await speaking_stream.write(array_pcm)
+                if not delta.text:
+                    return
 
-            tts_stream.on('data', tts_on_data)
+                self.audio_tts(delta.text)
+
+            async def answering_on_error(e) -> None:
+                raise e
+
+            self._log(f'Answering...')
+            answering_stream = fwk.asst(transcription)
+            answering_stream.on('data', answering_on_data)
+            answering_stream.on('error', answering_on_error)
+            await answering_stream.coroutine
 
             i += 1
+
+        async def on_info(bus: fwk.StreamBus) -> None:
+            nonlocal is_speaking
+            print(bus.data)
+
+            if bus.name_to != 'c':
+                return
+            print('here')
+            match bus.data:
+                case 'event:hearing_started':
+                    if not is_speaking:
+                        return
+                    await to_view('order:stop_speaking')
+                    self.audio_filler()
+                case 'event:speaking_started':
+                    is_speaking = True
+                case 'event:speaking_ended':
+                    is_speaking = False
 
         async def on_close() -> None:
             pass
@@ -73,10 +159,16 @@ class Controller:
                 case builtins.Exception:
                     self._log(f'Unexpected Error: {e}')
                 case builtins.BaseException | _:
-                    self._log(f'Unexpected: {e}')\
+                    self._log(f'Unexpected: {e}')
+                    raise e
 
-        hearing_stream.on('data', on_data)
-        hearing_stream.on('close', on_close)
-        hearing_stream.on('error', on_error)
+        self.hearing_stream.on('data', on_data)
+        self.hearing_stream.on('info', on_info)
+        self.hearing_stream.on('close', on_close)
+        self.hearing_stream.on('error', on_error)
+        self.speaking_stream.on('error', on_error)
+        self.control_stream.on('error', on_error)
 
-        await hearing_stream.task_coroutine
+        await self.hearing_stream.coroutine
+        await self.speaking_stream.coroutine
+        await self.control_stream.coroutine
