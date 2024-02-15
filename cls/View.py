@@ -2,7 +2,6 @@ import asyncio
 import time
 import numpy as np
 import sounddevice as sd
-import typing
 import fwk
 
 
@@ -20,7 +19,7 @@ class View:
             input_device: str | int = 0,
             input_sensitivity: int = 75,
             is_logging: bool = True,
-    ):
+    ) -> None:
         self.stt_samplerate = stt_samplerate
         self.stt_num_channels = stt_num_channels
         self.stt_model = stt_model
@@ -46,12 +45,16 @@ class View:
         record_buffer_size = 10 * 1024 * 1024  # 10 MB
         activation_buffer = bytearray()
         record_buffer = bytearray()
+        triggered_at = 0
         is_started = False
         is_triggered = False
         i = 0
 
         record_process = fwk.record_audio(self.input_device, self.stt_samplerate, self.stt_num_channels)
         hearing_stream = fwk.Stream()
+
+        async def to_controller(message: str):
+            await hearing_stream.info('v', 'c', message)
 
         # Commits the record
         async def commit(input_bytes: bytes) -> None:
@@ -63,9 +66,18 @@ class View:
 
             i += 1
 
+        # Rejects the record
+        async def reject(input_bytes: bytes) -> None:
+            nonlocal i
+
+            self._log(f'Rejected x{i + 1}')
+            record_buffer.clear()
+
+            i += 1
+
         # Analyzes the record
         async def analyze(chunk_bytes: bytes) -> None:
-            nonlocal activation_buffer, record_buffer, is_started, is_triggered
+            nonlocal activation_buffer, record_buffer, triggered_at, is_started, is_triggered
 
             # Doing some checks
             if not is_started:
@@ -90,9 +102,19 @@ class View:
 
             # Doing some checks
             if is_triggered and not old_is_triggered:
+                triggered_at = time.time()
+                await to_controller('event:hearing_started')
+
                 self._log(f'Hear you x{i + 1}')
             if not is_triggered and old_is_triggered:
-                await commit(record_buffer)
+                not_triggered_at = time.time()
+
+                if not_triggered_at - triggered_at > 1:
+                    await commit(record_buffer)
+                    await to_controller('event:hearing_ended')
+                else:
+                    await reject(record_buffer)
+                    await to_controller('event:hearing_aborted')
             if not is_triggered:
                 record_buffer.clear()
 
@@ -121,19 +143,15 @@ class View:
         audio_queue = asyncio.Queue()
         excess_queue = asyncio.Queue()
         speaking_stream = fwk.Stream()
+        is_speaking = False
 
-        # def callback(outdata, frames, time, status) -> None:
-        #     nonlocal pcm_format, audio_queue
-        #
-        #     if not status:
-        #         try:
-        #             data = audio_queue.get_nowait()
-        #         except asyncio.QueueEmpty:
-        #             data = np.zeros((frames, 2), dtype=pcm_format)
-        #         outdata[:] = data
+        async def to_controller(message: str):
+            await speaking_stream.info('v', 'c', message)
 
         def callback(outdata, frames, time, status):
-            nonlocal pcm_format, audio_queue, excess_queue
+            nonlocal pcm_format, audio_queue, excess_queue, is_speaking
+
+            old_is_speaking = is_speaking
 
             if status:
                 return
@@ -148,6 +166,7 @@ class View:
                     final_queue = audio_queue
 
                 data = final_queue.get_nowait()
+                is_speaking = True
 
                 # Adjusting the chunk size to the frame size
                 if data.shape[0] > frames:
@@ -160,9 +179,14 @@ class View:
                 # Marking the task done
                 final_queue.task_done()
             except asyncio.QueueEmpty:
-                pass
+                is_speaking = False
 
             outdata[:] = result
+
+            if is_speaking and not old_is_speaking:
+                asyncio.run(to_controller('event:speaking_started'))
+            elif not is_speaking and old_is_speaking:
+                asyncio.run(to_controller('event:speaking_ended'))
 
         audio_stream = sd.OutputStream(
             callback=callback,
@@ -173,6 +197,14 @@ class View:
         async def on_data(data) -> None:
             await audio_queue.put(data)
 
+        async def on_info(bus: fwk.StreamBus) -> None:
+            if bus.name_to != 'v':
+                return
+            match bus.data:
+                case 'order:stop_speaking':
+                    fwk.clear_queue(excess_queue)
+                    fwk.clear_queue(audio_queue)
+
         async def on_close(value) -> None:
             audio_stream.stop()
 
@@ -180,6 +212,7 @@ class View:
             audio_stream.start()
 
         speaking_stream.on('data', on_data)
+        speaking_stream.on('info', on_info)
         speaking_stream.on('close', on_close)
 
         speaking_task = asyncio.create_task(speaking_process())

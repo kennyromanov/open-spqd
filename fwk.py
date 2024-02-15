@@ -1,31 +1,34 @@
 import os
 import subprocess
 import math
+import re
 import asyncio
 import typing
 import pydub
 import wave
 import sounddevice as sd
 import numpy as np
-import colorama
 import redis
 import openai
 from io import BytesIO
 from typing import List
-from colorama import Fore, Style
 from dotenv import load_dotenv
 
 # Third-Parties
 
 load_dotenv()
 
-colorama.init()
-
 r = redis.Redis()
 
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
+
 # Types
+
+GptModel = typing.Literal[
+    'gpt-3.5-turbo-0125',
+    'gpt-4-turbo-preview',
+]
 
 TtsModel = typing.Literal[
     'tts-1',
@@ -49,7 +52,13 @@ StreamEvents = typing.Literal[
     'open',
     'data',
     'close',
+    'info',
     'error',
+]
+
+AsstDeltaType = typing.Literal[
+    'chunk',
+    'stop',
 ]
 
 
@@ -60,7 +69,7 @@ class SpqError(Exception):
 
 
 class StreamEvent:
-    def __init__(self, event: StreamEvents, handler: typing.Callable):
+    def __init__(self, event: StreamEvents, handler: typing.Callable) -> None:
         self.event = event
         self.handler = handler
 
@@ -73,12 +82,19 @@ class StreamEvent:
         await self.handler(data)
 
 
+class StreamBus:
+    def __init__(self, name_from: str = "Unknown", name_to: str = "All", data: typing.Any = None) -> None:
+        self.name_from = name_from
+        self.name_to = name_to
+        self.data = data
+
+
 class Stream:
-    def __init__(self, task: typing.Any = None, subs: List[StreamEvent] = None):
+    def __init__(self, task: typing.Any = None, subs: List[StreamEvent] = None) -> None:
         if subs is None:
             subs = []
 
-        self.task_coroutine = task
+        self.coroutine = task
         self.subs = subs
 
     async def emit(self, event: StreamEvents, data) -> None:
@@ -88,6 +104,10 @@ class Stream:
     async def write(self, value) -> None:
         await self.emit('data', value)
 
+    async def info(self, name_from: str, name_to: str, data: typing.Any) -> None:
+        info_bus = StreamBus(name_from, name_to, data)
+        await self.emit('info', info_bus)
+
     async def close(self, value=None) -> None:
         await self.emit('close', value)
 
@@ -95,28 +115,33 @@ class Stream:
         await self.emit('error', e)
 
     def task(self, coroutine: typing.Any) -> None:
-        self.task_coroutine = coroutine
+        self.coroutine = coroutine
 
     def on(self, event: StreamEvents, callback: typing.Callable) -> None:
         self.subs.append(StreamEvent(event, callback))
 
 
+class AsstTool:
+    def __init__(self, name: str, descr: str, args: object, required: object, handler: typing.Callable) -> None:
+        self.name = name
+        self.descr = descr
+        self.args = args
+        self.required = required
+        self.handler = handler
+
+
+class AsstDelta:
+    def __init__(self, type: AsstDeltaType = 'chunk', text: str = None, tool: AsstTool = None) -> None:
+        self.type = type
+        self.text = text
+        self.tool = tool
+
+
 # Base Functions
 
-def beautify_error(e: Exception) -> str:
-    return f"\n\n{Fore.RED + Style.BRIGHT}(!) Open Chatter Error\n{Fore.RESET + str(e)}\n"
 
-
-def beautify_log(message: str) -> str:
-    return f"\n{Fore.GREEN}(+) Open Chatter: {message}"
-
-
-def log(message: str) -> None:
-    print(beautify_log(message))
-
-
-def log_error(e: Exception) -> None:
-    print(beautify_error(e))
+def error(message: str) -> SpqError:
+    return SpqError(message)
 
 
 def default_output(strict: bool = False) -> typing.Any:
@@ -127,6 +152,14 @@ def default_output(strict: bool = False) -> typing.Any:
         if strict:
             raise e
         return None
+
+
+def clear_queue(asyncio_queue: asyncio.Queue) -> None:
+    while not asyncio_queue.empty():
+        try:
+            asyncio_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
 
 
 def record_audio(
@@ -226,11 +259,12 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
         )
 
         # Streaming the audio
-        for data in response.response.iter_bytes():
-            await audio_stream.write(data)
+        for chunk in response.response.iter_bytes():
+            await audio_stream.write(chunk)
 
         await audio_stream.close()
 
+    # Instantly returning the stream
     fetching_task = asyncio.create_task(fetch_audio())
     audio_stream.task(fetching_task)
 
@@ -240,6 +274,7 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
 def stt(model: SttModel, filename: str, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
     audio_file = open(filename, "rb")
 
+    # Querying the API
     response = openai.audio.transcriptions.create(
         model=model,
         file=audio_file,
@@ -247,3 +282,107 @@ def stt(model: SttModel, filename: str, prompt: str = 'Обычная речь, 
     )
 
     return response.text
+
+
+def gpt(model: GptModel, conv: typing.Any) -> Stream:
+    answer_stream = Stream()
+
+    async def on_close(value):
+        # TODO: kr: Make an ability to stop answering
+        pass
+
+    async def fetch_answer():
+        # Querying the API
+        response = openai.chat.completions.create(
+            model=model,
+            messages=conv,
+            stream=True,
+        )
+
+        # Streaming the answer
+        for chunk in response:
+            await answer_stream.write(chunk.choices[0].delta)
+
+        await answer_stream.close()
+
+    fetching_task = asyncio.create_task(fetch_answer())
+
+    # Instantly returning the stream
+    answer_stream.task(fetching_task)
+    answer_stream.on('close', on_close)
+
+    return answer_stream
+
+
+def asst(message: str, funcs: List[AsstTool] = None) -> Stream:
+    if not funcs:
+        funcs = []
+
+    final_role = ''
+    final_content = ''
+    final_tools = ''
+    answering_stream = Stream()
+    answering_buffer = ''
+
+    # Commits the sentences
+    async def commit(input_text: str):
+        nonlocal answering_buffer
+
+        asst_delta = AsstDelta(
+            type='chunk',
+            text=input_text
+        )
+
+        await answering_stream.write(asst_delta)
+        answering_buffer = ''
+
+    # Analyzes the bot output searching for the quantizable chunks
+    async def analyze(input_text: str):
+        quantisation = 2
+        regex = re.compile(r'.+?[.;?!\n]+', flags=re.MULTILINE)
+        matches = regex.findall(input_text)
+
+        if len(matches) >= quantisation:
+            await commit(input_text)
+
+    async def gpt_on_data(delta) -> None:
+        nonlocal final_role, final_content, final_tools, answering_buffer
+        if delta.role:
+            final_role += delta.role
+        if delta.content:
+            final_content += delta.content
+            answering_buffer += delta.content
+        if delta.tool_calls:
+            final_tools += delta.tool_calls
+
+        await analyze(answering_buffer)
+
+    async def gpt_on_close(value) -> None:
+        nonlocal answering_buffer
+
+        # Committing the rest of the buffer if it is remained
+        if answering_buffer:
+            await commit(answering_buffer)
+
+        asst_delta = AsstDelta(
+            type='stop',
+            text=final_content,
+            tool=None,
+        )
+
+        await answering_stream.write(asst_delta)
+
+    async def gpt_on_error(e) -> None:
+        await answering_stream.error(e)
+
+    gpt_stream = gpt('gpt-3.5-turbo-0125', [
+        {'role': 'system', 'content': 'You are a helpful assistant.'},
+        {'role': 'user', 'content': message},
+    ])
+    gpt_stream.on('data', gpt_on_data)
+    gpt_stream.on('close', gpt_on_close)
+    gpt_stream.on('error', gpt_on_error)
+
+    answering_stream.task(gpt_stream.coroutine)
+
+    return answering_stream
