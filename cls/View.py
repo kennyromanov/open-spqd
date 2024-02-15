@@ -1,6 +1,5 @@
 import asyncio
-import typing
-
+import time
 import numpy as np
 import sounddevice as sd
 import fwk
@@ -31,15 +30,11 @@ class View:
         self.tts_voice = tts_voice
         self.input_device = input_device
         self.input_sensitivity = input_sensitivity
-        self.control_stream = fwk.Stream()
         self.is_logging = is_logging
 
     def _log(self, message: str) -> None:
         if self.is_logging:
             print(f'(v) {message}')
-
-    async def _info(self, to: str, data: typing.Any) -> None:
-        await self.control_stream.info('v', to, data)
 
     def tts(self, message: str) -> fwk.Stream:
         audio_stream = fwk.tts(self.tts_model, self.tts_voice, message)
@@ -50,12 +45,16 @@ class View:
         record_buffer_size = 10 * 1024 * 1024  # 10 MB
         activation_buffer = bytearray()
         record_buffer = bytearray()
+        triggered_at = 0
         is_started = False
         is_triggered = False
         i = 0
 
         record_process = fwk.record_audio(self.input_device, self.stt_samplerate, self.stt_num_channels)
         hearing_stream = fwk.Stream()
+
+        async def to_controller(message: str):
+            await hearing_stream.info('v', 'c', message)
 
         # Commits the record
         async def commit(input_bytes: bytes) -> None:
@@ -67,9 +66,18 @@ class View:
 
             i += 1
 
+        # Rejects the record
+        async def reject(input_bytes: bytes) -> None:
+            nonlocal i
+
+            self._log(f'Rejected x{i + 1}')
+            record_buffer.clear()
+
+            i += 1
+
         # Analyzes the record
         async def analyze(chunk_bytes: bytes) -> None:
-            nonlocal activation_buffer, record_buffer, is_started, is_triggered
+            nonlocal activation_buffer, record_buffer, triggered_at, is_started, is_triggered
 
             # Doing some checks
             if not is_started:
@@ -94,11 +102,19 @@ class View:
 
             # Doing some checks
             if is_triggered and not old_is_triggered:
-                await self._info('c', 'event:hearing_started')
+                triggered_at = time.time()
+                await to_controller('event:hearing_started')
+
                 self._log(f'Hear you x{i + 1}')
             if not is_triggered and old_is_triggered:
-                await self._info('c', 'event:hearing_ended')
-                await commit(record_buffer)
+                not_triggered_at = time.time()
+
+                if not_triggered_at - triggered_at > 1:
+                    await commit(record_buffer)
+                    await to_controller('event:hearing_ended')
+                else:
+                    await reject(record_buffer)
+                    await to_controller('event:hearing_aborted')
             if not is_triggered:
                 record_buffer.clear()
 
@@ -129,8 +145,13 @@ class View:
         speaking_stream = fwk.Stream()
         is_speaking = False
 
+        async def to_controller(message: str):
+            await speaking_stream.info('v', 'c', message)
+
         def callback(outdata, frames, time, status):
             nonlocal pcm_format, audio_queue, excess_queue, is_speaking
+
+            old_is_speaking = is_speaking
 
             if status:
                 return
@@ -147,8 +168,6 @@ class View:
                 data = final_queue.get_nowait()
                 is_speaking = True
 
-                asyncio.run(self._info('c', 'event:speaking_started'))
-
                 # Adjusting the chunk size to the frame size
                 if data.shape[0] > frames:
                     excess_queue.put_nowait(data[frames:])
@@ -160,13 +179,14 @@ class View:
                 # Marking the task done
                 final_queue.task_done()
             except asyncio.QueueEmpty:
-                old_is_speaking = is_speaking
                 is_speaking = False
 
-                if not is_speaking and old_is_speaking:
-                    asyncio.run(self._info('c', 'event:speaking_started'))
-
             outdata[:] = result
+
+            if is_speaking and not old_is_speaking:
+                asyncio.run(to_controller('event:speaking_started'))
+            elif not is_speaking and old_is_speaking:
+                asyncio.run(to_controller('event:speaking_ended'))
 
         audio_stream = sd.OutputStream(
             callback=callback,
@@ -199,6 +219,3 @@ class View:
         speaking_stream.task(speaking_task)
 
         return speaking_stream
-
-    def control(self) -> fwk.Stream:
-        return self.control_stream

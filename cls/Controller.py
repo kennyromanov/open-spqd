@@ -1,10 +1,11 @@
 import asyncio
 import builtins
 import numpy as np
-import random
 import typing
+import random
+import colorama
 import fwk
-from asyncio import Future
+from typing import List
 from .View import View
 
 
@@ -29,26 +30,6 @@ class Controller:
         self.pcm_format = np.int32
         self.hearing_stream = None
         self.speaking_stream = None
-        self.control_stream = None
-
-        self.audio_park = {
-            'ah': [
-                self.audio_gen('А?'),
-                self.audio_gen('А?'),
-            ],
-            'what': [
-                self.audio_gen('Что?'),
-                self.audio_gen('Что?'),
-            ],
-            'yes': [
-                self.audio_gen('Да-да.'),
-                self.audio_gen('Да-да.'),
-            ],
-            'please': [
-                self.audio_gen('Говорите.'),
-                self.audio_gen('Говорите.'),
-            ],
-        }
 
     def _log(self, message: str) -> None:
         print(f'(c) {message}')
@@ -62,36 +43,36 @@ class Controller:
         tts_stream = self.view.tts(message)
         tts_stream.on('data', self.audio_play)
 
-    def audio_filler(self) -> None:
-        random_cat = random.choice(list(self.audio_park.items()))
-        random_word = random.choice(random_cat)
-        self.audio_play(random_word)
+    async def audio_filler(self, variants: List[str | None] = None) -> None:
+        if variants is None:
+            variants = [
+                'А?',
+                'Да?..',
+                'Что-что?',
+                'Простите?',
+                'Простите, Вы что-то сказали?',
+                'Извините, что?',
+                'Да-да? Чем я могу помочь?',
+            ]
 
-    def audio_gen(self, message: str) -> Future[bytes]:
-        future = Future()
-        result = bytearray()
+        variant = random.choice(variants)
 
-        async def on_data(chunk):
-            result.extend(chunk)
+        if variant is None:
+            return
 
-        async def on_close(value):
-            future.set_result(result)
-
-        audio_stream = self.view.tts(message)
-        audio_stream.on('data', on_data)
-        audio_stream.on('close', on_close)
-
-        return future
+        self.audio_tts(random.choice(variants))
 
     async def start(self) -> None:
         self.hearing_stream = self.view.hear()
         self.speaking_stream = self.view.speak()
-        self.control_stream = self.view.control()
         is_speaking = False
         i = 0
 
-        async def to_view(data: typing.Any) -> None:
-            await self.control_stream.info('c', 'v', data)
+        async def to_hearing(data: typing.Any) -> None:
+            await self.hearing_stream.info('c', 'v', data)
+
+        async def to_speaking(data: typing.Any) -> None:
+            await self.speaking_stream.info('c', 'v', data)
 
         async def on_data(data) -> None:
             nonlocal i
@@ -121,33 +102,45 @@ class Controller:
             async def answering_on_error(e) -> None:
                 raise e
 
+            async def answering_process() -> None:
+                nonlocal transcription
+
+                answering_stream = fwk.asst(transcription)
+                answering_stream.on('data', answering_on_data)
+                answering_stream.on('error', answering_on_error)
+
+                await answering_stream.coroutine
+
             self._log(f'Answering...')
-            answering_stream = fwk.asst(transcription)
-            answering_stream.on('data', answering_on_data)
-            answering_stream.on('error', answering_on_error)
-            await answering_stream.coroutine
+            await asyncio.create_task(answering_process())
 
             i += 1
 
         async def on_info(bus: fwk.StreamBus) -> None:
             nonlocal is_speaking
-            print(bus.data)
+            # self._log(f'{colorama.Fore.RED}dbg:{bus.data}{colorama.Style.RESET_ALL}')
 
             if bus.name_to != 'c':
                 return
-            print('here')
+
             match bus.data:
                 case 'event:hearing_started':
+                    # A regular hearing - not interrupting
                     if not is_speaking:
                         return
-                    await to_view('order:stop_speaking')
-                    self.audio_filler()
+
+                    # Immediately stop speaking and ask the user
+                    await to_speaking('order:stop_speaking')
+                    self._log(f'Interrupted')
+                case 'event:hearing_aborted':
+                    self._log(f'Filling...')
+                    await self.audio_filler()
                 case 'event:speaking_started':
                     is_speaking = True
                 case 'event:speaking_ended':
                     is_speaking = False
 
-        async def on_close() -> None:
+        async def on_close(value) -> None:
             pass
 
         async def on_error(e: BaseException) -> None:
@@ -166,9 +159,8 @@ class Controller:
         self.hearing_stream.on('info', on_info)
         self.hearing_stream.on('close', on_close)
         self.hearing_stream.on('error', on_error)
+        self.speaking_stream.on('info', on_info)
         self.speaking_stream.on('error', on_error)
-        self.control_stream.on('error', on_error)
 
         await self.hearing_stream.coroutine
         await self.speaking_stream.coroutine
-        await self.control_stream.coroutine

@@ -8,19 +8,15 @@ import pydub
 import wave
 import sounddevice as sd
 import numpy as np
-import colorama
 import redis
 import openai
 from io import BytesIO
 from typing import List
-from colorama import Fore, Style
 from dotenv import load_dotenv
 
 # Third-Parties
 
 load_dotenv()
-
-colorama.init()
 
 r = redis.Redis()
 
@@ -143,24 +139,9 @@ class AsstDelta:
 
 # Base Functions
 
-def beautify_error(e: Exception) -> str:
-    return f"\n\n{Fore.RED + Style.BRIGHT}(!) Open Chatter Error\n{Fore.RESET + str(e)}\n"
-
-
-def beautify_log(message: str) -> str:
-    return f"\n{Fore.GREEN}(+) Open Chatter: {message}"
-
 
 def error(message: str) -> SpqError:
     return SpqError(message)
-
-
-def log(message: str) -> None:
-    print(beautify_log(message))
-
-
-def log_error(e: Exception) -> None:
-    print(beautify_error(e))
 
 
 def default_output(strict: bool = False) -> typing.Any:
