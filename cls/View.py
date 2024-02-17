@@ -3,6 +3,26 @@ import time
 import numpy as np
 import sounddevice as sd
 import fwk
+from typing import List, Callable
+
+
+class HearingPluginData:
+    def __init__(self,
+                 record: bytes = None,
+                 is_triggered: bool = None,
+                 is_prw_triggered: bool = None,
+                 triggered_at: float = None,
+                 triggered_duration: float = None,
+                 commit: Callable = None,
+                 reject: Callable = None,
+                 ):
+        self.record = record
+        self.is_triggered = is_triggered
+        self.is_prw_triggered = is_prw_triggered
+        self.triggered_at = triggered_at
+        self.triggered_duration = triggered_duration
+        self.commit = commit
+        self.reject = reject
 
 
 class View:
@@ -40,35 +60,41 @@ class View:
         audio_stream = fwk.tts(self.tts_model, self.tts_voice, message)
         return audio_stream
 
-    def hear(self) -> fwk.Stream:
-        activation_buffer_size = 32 * 1024  # 32 KB
+    def hear(self, plugins: List[Callable] = None) -> fwk.Stream:
+        if not plugins:
+            plugins = []
+
+        activation_buffer_size = 48 * 1024  # 48 KB
         record_buffer_size = 10 * 1024 * 1024  # 10 MB
         activation_buffer = bytearray()
         record_buffer = bytearray()
         triggered_at = 0
-        is_started = False
+        triggered_duration = 0
         is_triggered = False
         i = 0
 
+        # Open the streams
         record_process = fwk.record_audio(self.input_device, self.stt_samplerate, self.stt_num_channels)
         hearing_stream = fwk.Stream()
 
-        async def to_controller(message: str):
-            await hearing_stream.info('v', 'c', message)
+        # Calls the plugins
+        async def call_plugins(data: HearingPluginData) -> None:
+            handlers = [asyncio.create_task(plugin(data)) for plugin in plugins]
+            await asyncio.gather(*handlers)
 
         # Commits the record
-        async def commit(input_bytes: bytes) -> None:
-            nonlocal i
+        async def commit() -> None:
+            nonlocal record_buffer, i
 
             self._log(f'Commited x{i + 1}')
-            await hearing_stream.write(input_bytes)
+            await hearing_stream.write(record_buffer)
             record_buffer.clear()
 
             i += 1
 
         # Rejects the record
-        async def reject(input_bytes: bytes) -> None:
-            nonlocal i
+        async def reject() -> None:
+            nonlocal record_buffer, i
 
             self._log(f'Rejected x{i + 1}')
             record_buffer.clear()
@@ -77,14 +103,9 @@ class View:
 
         # Analyzes the record
         async def analyze(chunk_bytes: bytes) -> None:
-            nonlocal activation_buffer, record_buffer, triggered_at, is_started, is_triggered
+            nonlocal activation_buffer, record_buffer, triggered_at, triggered_duration, is_triggered
 
-            # Doing some checks
-            if not is_started:
-                print('==== Chat is Started ====')
-            is_started = True
-
-            # If buffers are filled
+            # If the buffers are filled
             if len(activation_buffer) >= activation_buffer_size:
                 activation_buffer.clear()
             if len(record_buffer) >= record_buffer_size:
@@ -95,29 +116,36 @@ class View:
             activation_buffer.extend(chunk_bytes)
             record_buffer.extend(chunk_bytes)
 
+            # Calculating Is triggered
             calc_volume = fwk.calc_volume(activation_buffer)
-
-            old_is_triggered = is_triggered
+            is_prw_triggered = is_triggered
             is_triggered = calc_volume > (100 - self.input_sensitivity)
 
-            # Doing some checks
-            if is_triggered and not old_is_triggered:
+            # Call on record started
+            if is_triggered and not is_prw_triggered:
                 triggered_at = time.time()
-                await to_controller('event:hearing_started')
 
-                self._log(f'Hear you x{i + 1}')
-            if not is_triggered and old_is_triggered:
-                not_triggered_at = time.time()
+            # Call on record
+            if is_triggered:
+                triggered_duration = time.time() - triggered_at
 
-                if not_triggered_at - triggered_at > 1:
-                    await commit(record_buffer)
-                    await to_controller('event:hearing_ended')
-                else:
-                    await reject(record_buffer)
-                    await to_controller('event:hearing_aborted')
+            # Calling the plugins
+            await asyncio.create_task(call_plugins(HearingPluginData(
+                record=record_buffer[:],
+                is_triggered=is_triggered,
+                is_prw_triggered=is_prw_triggered,
+                triggered_at=triggered_at,
+                triggered_duration=triggered_duration,
+                commit=commit,
+                reject=reject,
+            )))
+
+            # Call on no record
             if not is_triggered:
                 record_buffer.clear()
+                triggered_duration = 0
 
+        # The hearing loop
         async def hearing_process() -> None:
             try:
                 while True:
@@ -133,6 +161,7 @@ class View:
                 record_process.kill()
                 await hearing_stream.error(e)
 
+        # Immediately returning the stream
         hearing_task = asyncio.create_task(hearing_process())
         hearing_stream.task(hearing_task)
 

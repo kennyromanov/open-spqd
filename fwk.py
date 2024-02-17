@@ -144,16 +144,6 @@ def error(message: str) -> SpqError:
     return SpqError(message)
 
 
-def default_output(strict: bool = False) -> typing.Any:
-    try:
-        device = sd.query_devices(kind='output')
-        return device['index']
-    except Exception as e:
-        if strict:
-            raise e
-        return None
-
-
 def clear_queue(asyncio_queue: asyncio.Queue) -> None:
     while not asyncio_queue.empty():
         try:
@@ -181,9 +171,19 @@ def record_audio(
     return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
+def audio_default_output(strict: bool = False) -> typing.Any:
+    try:
+        device = sd.query_devices(kind='output')
+        return device['index']
+    except Exception as e:
+        if strict:
+            raise e
+        return None
+
+
 def play_audio(input_bytes: bytes, format_name: str, samplerate=48000, output_device: str | int = None) -> None:
     if not output_device:
-        output_device = default_output()
+        output_device = audio_default_output()
 
     # Decoding the audio
     bytes_pcm = to_pcm(input_bytes, format_name)
@@ -237,6 +237,7 @@ def pcm_to_wav(input_bytes: bytes, samplerate: int, num_channels: int) -> BytesI
         wav_file.setsampwidth(2)
         wav_file.setframerate(samplerate)
         wav_file.writeframes(input_bytes)
+
     wav_io.seek(0)
 
     return wav_io
@@ -271,13 +272,11 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
     return audio_stream
 
 
-def stt(model: SttModel, filename: str, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
-    audio_file = open(filename, "rb")
-
+def stt(model: SttModel, input_wav: BytesIO, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
     # Querying the API
     response = openai.audio.transcriptions.create(
         model=model,
-        file=audio_file,
+        file=input_wav,
         prompt=prompt,
     )
 
