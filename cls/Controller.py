@@ -7,6 +7,7 @@ import colorama
 import fwk
 from typing import List
 from .View import View
+from .Yamnet import Yamnet
 
 
 class Controller:

@@ -144,16 +144,6 @@ def error(message: str) -> SpqError:
     return SpqError(message)
 
 
-def default_output(strict: bool = False) -> typing.Any:
-    try:
-        device = sd.query_devices(kind='output')
-        return device['index']
-    except Exception as e:
-        if strict:
-            raise e
-        return None
-
-
 def clear_queue(asyncio_queue: asyncio.Queue) -> None:
     while not asyncio_queue.empty():
         try:
@@ -181,9 +171,19 @@ def record_audio(
     return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
+def audio_default_output(strict: bool = False) -> typing.Any:
+    try:
+        device = sd.query_devices(kind='output')
+        return device['index']
+    except Exception as e:
+        if strict:
+            raise e
+        return None
+
+
 def play_audio(input_bytes: bytes, format_name: str, samplerate=48000, output_device: str | int = None) -> None:
     if not output_device:
-        output_device = default_output()
+        output_device = audio_default_output()
 
     # Decoding the audio
     bytes_pcm = to_pcm(input_bytes, format_name)
