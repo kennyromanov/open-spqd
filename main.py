@@ -17,7 +17,7 @@ from cls import Controller
 async def main():
     await Controller(
         input_device='AirPods — Kenny R',
-        input_sensitivity=60,
+        input_sensitivity=80,
     ).start()
 
 asyncio.run(main())

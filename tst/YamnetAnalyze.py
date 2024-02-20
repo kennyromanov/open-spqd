@@ -9,7 +9,7 @@ def load_audio(file_path, target_sr=16000):
         audio = tf.signal.resample(audio, int(len(audio) * target_sr / sr), len(audio))
     return audio.numpy(), sr.numpy()
 
-audio, sr = load_audio('/Users/kennyromanov/Projects/open-spqd/tmp/output_1.wav')
+audio, sr = load_audio('/Users/kennyromanov/Projects/open-spqd/tmp/dbg_3.wav')
 
 yamnet = Yamnet()
 

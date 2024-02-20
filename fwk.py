@@ -237,6 +237,7 @@ def pcm_to_wav(input_bytes: bytes, samplerate: int, num_channels: int) -> BytesI
         wav_file.setsampwidth(2)
         wav_file.setframerate(samplerate)
         wav_file.writeframes(input_bytes)
+
     wav_io.seek(0)
 
     return wav_io
@@ -271,13 +272,11 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
     return audio_stream
 
 
-def stt(model: SttModel, filename: str, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
-    audio_file = open(filename, "rb")
-
+def stt(model: SttModel, input_wav: BytesIO, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
     # Querying the API
     response = openai.audio.transcriptions.create(
         model=model,
-        file=audio_file,
+        file=input_wav,
         prompt=prompt,
     )
 
