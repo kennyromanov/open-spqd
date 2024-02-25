@@ -11,7 +11,7 @@ import numpy as np
 import redis
 import openai
 from io import BytesIO
-from typing import List
+from typing import Any, List, Callable, Generic, Concatenate, Awaitable
 from dotenv import load_dotenv
 
 # Third-Parties
@@ -24,6 +24,8 @@ openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 
 # Types
+
+T = typing.TypeVar('T')
 
 GptModel = typing.Literal[
     'gpt-3.5-turbo-0125',
@@ -83,14 +85,14 @@ class StreamEvent:
 
 
 class StreamBus:
-    def __init__(self, name_from: str = "Unknown", name_to: str = "All", data: typing.Any = None) -> None:
+    def __init__(self, name_from: str = "Unknown", name_to: str = "All", data: Any = None) -> None:
         self.name_from = name_from
         self.name_to = name_to
         self.data = data
 
 
 class Stream:
-    def __init__(self, task: typing.Any = None, subs: List[StreamEvent] = None) -> None:
+    def __init__(self, task: Any = None, subs: List[StreamEvent] = None) -> None:
         if subs is None:
             subs = []
 
@@ -104,7 +106,7 @@ class Stream:
     async def write(self, value) -> None:
         await self.emit('data', value)
 
-    async def info(self, name_from: str, name_to: str, data: typing.Any) -> None:
+    async def info(self, name_from: str, name_to: str, data: Any) -> None:
         info_bus = StreamBus(name_from, name_to, data)
         await self.emit('info', info_bus)
 
@@ -114,7 +116,7 @@ class Stream:
     async def error(self, e: BaseException) -> None:
         await self.emit('error', e)
 
-    def task(self, coroutine: typing.Any) -> None:
+    def task(self, coroutine: Any) -> None:
         self.coroutine = coroutine
 
     def on(self, event: StreamEvents, callback: typing.Callable) -> None:
@@ -122,7 +124,7 @@ class Stream:
 
 
 class AsstTool:
-    def __init__(self, name: str, descr: str, args: object, required: object, handler: typing.Callable) -> None:
+    def __init__(self, name: str, descr: str, args: dict[str, Any], required: List[str], handler: Callable) -> None:
         self.name = name
         self.descr = descr
         self.args = args
@@ -137,8 +139,7 @@ class AsstDelta:
         self.tool = tool
 
 
-# Base Functions
-
+# Functions
 
 def error(message: str) -> SpqError:
     return SpqError(message)
@@ -171,19 +172,31 @@ def record_audio(
     return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-def audio_default_output(strict: bool = False) -> typing.Any:
+def default_input(strict: bool = False) -> Any:
+    try:
+        device = sd.query_devices(kind='input')
+        return device['index']
+    except Exception as e:
+        if strict:
+            raise e
+
+        return None
+
+
+def default_output(strict: bool = False) -> Any:
     try:
         device = sd.query_devices(kind='output')
         return device['index']
     except Exception as e:
         if strict:
             raise e
+
         return None
 
 
 def play_audio(input_bytes: bytes, format_name: str, samplerate=48000, output_device: str | int = None) -> None:
     if not output_device:
-        output_device = audio_default_output()
+        output_device = default_output()
 
     # Decoding the audio
     bytes_pcm = to_pcm(input_bytes, format_name)
@@ -243,7 +256,13 @@ def pcm_to_wav(input_bytes: bytes, samplerate: int, num_channels: int) -> BytesI
     return wav_io
 
 
-# Framework Functions
+# Framework
+
+
+def path(*items):
+    root = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(root, *items)
+
 
 def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
     audio_stream = Stream()
@@ -283,7 +302,7 @@ def stt(model: SttModel, input_wav: BytesIO, prompt: str = 'Обычная ре�
     return response.text
 
 
-def gpt(model: GptModel, conv: typing.Any) -> Stream:
+def gpt(model: GptModel, conv: Any) -> Stream:
     answer_stream = Stream()
 
     async def on_close(value):

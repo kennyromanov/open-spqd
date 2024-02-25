@@ -2,6 +2,7 @@ import typing
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import fwk
 from typing import Any
 
 
@@ -20,7 +21,7 @@ class YamnetAnalyze:
 
 class Yamnet:
     def __init__(self) -> None:
-        self.model_filename = 'res/YAMNet'
+        self.model_filename = fwk.path('res', 'YAMNet')
         self.class_map_filename = f'{self.model_filename}/assets/yamnet_class_map.csv'
         self.model = tf.saved_model.load(self.model_filename)
         self.class_map: typing.Any = class_map_from(self.class_map_filename)

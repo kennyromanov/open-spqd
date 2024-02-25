@@ -64,7 +64,7 @@ class View:
         if not plugins:
             plugins = []
 
-        activation_buffer_size = 48 * 1024  # 48 KB
+        activation_buffer_size = 32 * 1024  # 32 KB
         record_buffer_size = 10 * 1024 * 1024  # 10 MB
         activation_buffer = bytearray()
         record_buffer = bytearray()

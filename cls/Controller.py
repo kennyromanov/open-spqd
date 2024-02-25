@@ -4,29 +4,58 @@ import numpy as np
 import tensorflow as tf
 import typing
 import random
-import time
-import colorama
 import fwk
-from typing import List
+from typing import Any, List
+from typing import Callable, Awaitable
+from typing_extensions import ParamSpec, Concatenate
 from .View import View, HearingPluginData
 from .Yamnet import Yamnet
+
+
+P = ParamSpec('P')
+
+AsstDeltaType = typing.Literal[
+    'chunk',
+    'stop',
+]
+
+
+class AsstHandlerState:
+    event: str | None
+    user_request: str | None
+    bot_response: str | None
+
+
+AsstHandler = Callable[[Concatenate[AsstHandlerState, P]], Awaitable[fwk.Stream]]
+
+
+async def base_handler(state: AsstHandlerState) -> fwk.Stream:
+    return fwk.asst(state.user_request)
 
 
 class Controller:
     def __init__(
             self,
+            tts_voice: fwk.TtsVoice = 'alloy',
             input_device: str | int = 0,
             input_sensitivity: int = 75,
             input_samplerate: int = 16000,
             input_num_channels: int = 1,
+            assistant_handler: AsstHandler = None
     ):
+        if not assistant_handler:
+            assistant_handler = base_handler
+
+        self.tts_voice = tts_voice
         self.input_device = input_device
         self.input_sensitivity = input_sensitivity
         self.input_samplerate = input_samplerate
         self.input_num_channels = input_num_channels
+        self.assistant_handler = assistant_handler
         self.view: View = View(
             input_device=self.input_device,
             input_sensitivity=self.input_sensitivity,
+            tts_voice=self.tts_voice,
             stt_samplerate=self.input_samplerate,
             stt_num_channels=self.input_num_channels,
         )
@@ -120,21 +149,18 @@ class Controller:
             is_started = True
 
             if state.is_triggered and state.triggered_duration > 1:
-                if not is_speaking or is_vad_checking or is_vad_checked:
+                if is_vad_checking or is_vad_checked:
                     return
 
                 is_vad_passed = await vad_check(state.record)
 
                 # If speech probability is less than 50%
                 if not is_vad_passed:
-                    self._log(f'Processed by VAD - Not speaking')
                     return
 
                 # If not - immediately stop speaking and ask the user
-                await to_speaking_stream('order:stop_speaking')
-
-                self._log(f'Interrupted')
-                await self.audio_filler()
+                if is_speaking:
+                    await to_speaking_stream('order:stop_speaking')
 
         # Call on record started
         async def on_record_started(state: HearingPluginData) -> None:
@@ -150,13 +176,23 @@ class Controller:
             nonlocal is_vad_passed, is_speaking, i
 
             if not state.is_triggered and state.is_prw_triggered:
-                if not is_speaking or is_vad_passed:
-                    await state.commit()
-                else:
-                    if not is_vad_checked:
-                        self._log(f'Too short - Not speaking')
+                if is_speaking and is_vad_passed and state.triggered_duration < 2:
+                    self._log(f'Interrupted - Did not understand')
                     await state.reject()
+                    await self.audio_filler()
+                elif state.triggered_duration < 0.5:
+                    self._log(f'Too short - Cannot transcribe')
+                    await state.reject()
+                elif not is_vad_passed:
+                    self._log(f'VAD checked - Not speaking')
+                    await state.reject()
+                elif is_speaking and is_vad_passed:
+                    self._log(f'Interrupted')
+                    await state.commit()
+                elif is_vad_passed:
+                    await state.commit()
 
+                is_vad_passed = False
                 i += 1
 
         # Open the streams
@@ -168,7 +204,7 @@ class Controller:
         self.speaking_stream = self.view.speak()
 
         # A message to the speaking stream
-        async def to_speaking_stream(data: typing.Any) -> None:
+        async def to_speaking_stream(data: Any) -> None:
             await self.speaking_stream.info('c', 'v', data)
 
         # Call on new hearing data
@@ -198,7 +234,10 @@ class Controller:
             async def answering_process() -> None:
                 nonlocal transcription
 
-                answering_stream = fwk.asst(transcription)
+                state = AsstHandlerState()
+                state.user_request = transcription
+
+                answering_stream = await self.assistant_handler(state)
                 answering_stream.on('data', answering_on_data)
                 answering_stream.on('error', answering_on_error)
 
