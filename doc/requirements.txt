@@ -8,4 +8,5 @@ pydub==0.25.1
 python-dotenv==1.0.1
 sounddevice==0.4.6
 tensorflow==2.15.0
+tensorflow_io==0.36.0
 wave==0.0.2
