@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import math
 import re
@@ -11,7 +12,8 @@ import numpy as np
 import redis
 import openai
 from io import BytesIO
-from typing import Any, List, Callable, Generic, Concatenate, Awaitable
+from typing import Any, List, Callable, Tuple
+from pydub import AudioSegment
 from dotenv import load_dotenv
 
 # Third-Parties
@@ -66,7 +68,7 @@ AsstDeltaType = typing.Literal[
 
 # Classes
 
-class SpqError(Exception):
+class SpqdError(Exception):
     pass
 
 
@@ -141,8 +143,8 @@ class AsstDelta:
 
 # Functions
 
-def error(message: str) -> SpqError:
-    return SpqError(message)
+def error(message: str) -> SpqdError:
+    return SpqdError(message)
 
 
 def clear_queue(asyncio_queue: asyncio.Queue) -> None:
@@ -153,11 +155,49 @@ def clear_queue(asyncio_queue: asyncio.Queue) -> None:
             break
 
 
+def stdin() -> Stream:
+    stdin_stream = Stream()
+
+    # Reading the stdin
+    async def read_stdin() -> None:
+        try:
+            while True:
+                # Reading the new chunk
+                chunk = sys.stdin.buffer.read(1024)
+                if not chunk:
+                    await stdin_stream.close()
+                    return
+
+                # Streaming the stdin
+                await stdin_stream.write(chunk)
+        except Exception as e:
+            await stdin_stream.error(e)
+            await stdin_stream.close()
+            raise e
+
+    # Instantly returning the stream
+    reading_task = asyncio.create_task(read_stdin())
+    stdin_stream.task(reading_task)
+
+    return stdin_stream
+
+
+def stdout() -> Stream:
+    stdout_stream = Stream()
+
+    async def on_data(chunk: bytes) -> None:
+        sys.stdout.buffer.write(chunk)
+
+    stdout_stream.on('data', on_data)
+
+    return stdout_stream
+
+
 def record_audio(
         input_device: str | int,
         samplerate: int = 16000,
         num_channels: int = 1
-) -> subprocess.Popen:
+) -> Stream:
     command = [
         'ffmpeg',
         '-f', 'avfoundation',
@@ -169,7 +209,36 @@ def record_audio(
         '-'
     ]
 
-    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    # If the input is stdin - return the stdin stream
+    if input_device == '-':
+        return stdin()
+
+    # Opening the streams
+    ffmpeg = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    recording_stream = Stream()
+
+    # Recording the audio
+    async def recording_audio() -> None:
+        try:
+            while True:
+                # Reading the new chunk
+                chunk = ffmpeg.stdout.read(1024)
+                if not chunk:
+                    await recording_stream.close()
+                    return
+
+                # Streaming the recording
+                await recording_stream.write(chunk)
+        except Exception as e:
+            ffmpeg.kill()
+            await recording_stream.error(e)
+            await recording_stream.close()
+
+    # Instantly returning the stream
+    recording_task = asyncio.create_task(recording_audio())
+    recording_stream.task(recording_task)
+
+    return recording_stream
 
 
 def default_input(strict: bool = False) -> Any:
@@ -194,54 +263,14 @@ def default_output(strict: bool = False) -> Any:
         return None
 
 
-def play_audio(input_bytes: bytes, format_name: str, samplerate=48000, output_device: str | int = None) -> None:
-    if not output_device:
-        output_device = default_output()
-
-    # Decoding the audio
-    bytes_pcm = to_pcm(input_bytes, format_name)
-    array_pcm = np.frombuffer(bytes_pcm, dtype=np.int32)
-
-    sd.play(data=array_pcm, samplerate=samplerate, device=output_device)
-    sd.wait()
-
-
-def calc_volume(buffer: bytes) -> float:
-    calc_sum = 0
-    sample_count = 0
-
-    # Reading the 16-bit values from the buffer
-    for i in range(0, len(buffer), 2):
-        if i + 1 < len(buffer):
-            int16 = int.from_bytes(buffer[i:i + 2], byteorder='little', signed=True)
-            calc_sum += int16 ** 2
-            sample_count += 1
-
-    if sample_count == 0:
-        return 0
-
-    rms = math.sqrt(calc_sum / sample_count)
-    db = 20 * math.log10((rms + 1e-9) / 32768)
-
-    min_db = -60.0
-    max_db = 20.0
-    result = (db - min_db) / (max_db - min_db) * 100
-
-    # Trimming the value by 0 and 100
-    result = 100 if result > 100 else result
-    result = 0 if result < 0 else result
-
-    return result
-
-
-def to_pcm(input_bytes: bytes, format_name: str) -> bytes:
-    file_ogg = BytesIO(input_bytes)
+def to_pcm(audio_bytes: bytes, format_name: str) -> bytes:
+    file_ogg = BytesIO(audio_bytes)
     audio = pydub.AudioSegment.from_file(file_ogg, format=format_name)
-    bytes_pcm = audio.raw_data
-    return bytes_pcm
+    pcm_bytes = audio.raw_data
+    return pcm_bytes
 
 
-def pcm_to_wav(input_bytes: bytes, samplerate: int, num_channels: int) -> BytesIO:
+def pcm_to_wav(pcm_bytes: bytes, samplerate: int, num_channels: int) -> BytesIO:
     wav_io = BytesIO()
 
     # Encoding the audio
@@ -249,11 +278,24 @@ def pcm_to_wav(input_bytes: bytes, samplerate: int, num_channels: int) -> BytesI
         wav_file.setnchannels(num_channels)
         wav_file.setsampwidth(2)
         wav_file.setframerate(samplerate)
-        wav_file.writeframes(input_bytes)
+        wav_file.writeframes(pcm_bytes)
 
     wav_io.seek(0)
 
     return wav_io
+
+
+def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, str]:
+    wav_file = BytesIO(wav_bytes)
+
+    audio_segment = AudioSegment.from_file(wav_file, format='wav')
+
+    pcm_bytes = audio_segment.raw_data
+    samplerate = audio_segment.frame_rate
+    num_channels = audio_segment.channels
+    array_type = audio_segment.array_type
+
+    return pcm_bytes, samplerate, num_channels, array_type
 
 
 # Framework
@@ -267,7 +309,8 @@ def path(*items):
 def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
     audio_stream = Stream()
 
-    async def fetch_audio():
+    # Fetching the audio
+    async def fetch_audio() -> None:
         nonlocal model, voice, input_text, audio_stream
 
         # Querying the API
@@ -305,11 +348,12 @@ def stt(model: SttModel, input_wav: BytesIO, prompt: str = 'Обычная ре�
 def gpt(model: GptModel, conv: Any) -> Stream:
     answer_stream = Stream()
 
-    async def on_close(value):
+    async def on_close(value: Any) -> None:
         # TODO: kr: Make an ability to stop answering
         pass
 
-    async def fetch_answer():
+    # Fetching the answer
+    async def fetch_answer() -> None:
         # Querying the API
         response = openai.chat.completions.create(
             model=model,
@@ -323,9 +367,8 @@ def gpt(model: GptModel, conv: Any) -> Stream:
 
         await answer_stream.close()
 
-    fetching_task = asyncio.create_task(fetch_answer())
-
     # Instantly returning the stream
+    fetching_task = asyncio.create_task(fetch_answer())
     answer_stream.task(fetching_task)
     answer_stream.on('close', on_close)
 
@@ -343,7 +386,7 @@ def asst(message: str, funcs: List[AsstTool] = None) -> Stream:
     answering_buffer = ''
 
     # Commits the sentences
-    async def commit(input_text: str):
+    async def commit(input_text: str) -> None:
         nonlocal answering_buffer
 
         asst_delta = AsstDelta(
@@ -355,7 +398,7 @@ def asst(message: str, funcs: List[AsstTool] = None) -> Stream:
         answering_buffer = ''
 
     # Analyzes the bot output searching for the quantizable chunks
-    async def analyze(input_text: str):
+    async def analyze(input_text: str) -> None:
         quantisation = 2
         regex = re.compile(r'.+?[.;?!\n]+', flags=re.MULTILINE)
         matches = regex.findall(input_text)

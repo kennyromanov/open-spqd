@@ -26,8 +26,8 @@ class Yamnet:
         self.model = tf.saved_model.load(self.model_filename)
         self.class_map: typing.Any = class_map_from(self.class_map_filename)
 
-    def analyze(self, input_bytes: bytes) -> YamnetAnalyze:
-        scores, embeddings, spectrogram = self.model(input_bytes)
+    def analyze(self, np_bytes: bytes) -> YamnetAnalyze:
+        scores, embeddings, spectrogram = self.model(np_bytes)
 
         result: YamnetAnalyze = YamnetAnalyze()
         result.scores = scores

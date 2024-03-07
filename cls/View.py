@@ -3,7 +3,7 @@ import time
 import numpy as np
 import sounddevice as sd
 import fwk
-from typing import List, Callable
+from typing import List, Callable, Any
 
 
 class HearingPluginData:
@@ -15,7 +15,7 @@ class HearingPluginData:
                  triggered_duration: float = None,
                  commit: Callable = None,
                  reject: Callable = None,
-                 ):
+                 ) -> None:
         self.record = record
         self.is_triggered = is_triggered
         self.is_prw_triggered = is_prw_triggered
@@ -38,6 +38,7 @@ class View:
             tts_voice: fwk.TtsVoice = 'alloy',
             input_device: str | int = 0,
             input_sensitivity: int = 75,
+            output_device: int = 0,
             is_logging: bool = True,
     ) -> None:
         self.stt_samplerate = stt_samplerate
@@ -50,6 +51,7 @@ class View:
         self.tts_voice = tts_voice
         self.input_device = input_device
         self.input_sensitivity = input_sensitivity
+        self.output_device = output_device
         self.is_logging = is_logging
 
     def _log(self, message: str) -> None:
@@ -74,8 +76,9 @@ class View:
         i = 0
 
         # Open the streams
-        record_process = fwk.record_audio(self.input_device, self.stt_samplerate, self.stt_num_channels)
+        recording_stream = fwk.record_audio(self.input_device, self.stt_samplerate, self.stt_num_channels)
         hearing_stream = fwk.Stream()
+        hearing_stream.task(recording_stream.coroutine)
 
         # Calls the plugins
         async def call_plugins(data: HearingPluginData) -> None:
@@ -145,25 +148,19 @@ class View:
                 record_buffer.clear()
                 triggered_duration = 0
 
-        # The hearing loop
-        async def hearing_process() -> None:
-            try:
-                while True:
-                    # Reading the stream
-                    chunk = record_process.stdout.read(1024)
-                    if not chunk:
-                        await hearing_stream.close()
-                        return
-
-                    # Analyzing the chunk
-                    await asyncio.create_task(analyze(chunk))
-            except BaseException as e:
-                record_process.kill()
-                await hearing_stream.error(e)
-
         # Immediately returning the stream
-        hearing_task = asyncio.create_task(hearing_process())
-        hearing_stream.task(hearing_task)
+        async def on_data(chunk: bytes) -> None:
+            await analyze(chunk)
+
+        async def on_close(value: Any) -> None:
+            await hearing_stream.close()
+
+        async def on_error(e: Exception) -> None:
+            await hearing_stream.error(e)
+
+        recording_stream.on('data', on_data)
+        recording_stream.on('close', on_close)
+        recording_stream.on('error', on_error)
 
         return hearing_stream
 
@@ -174,10 +171,10 @@ class View:
         speaking_stream = fwk.Stream()
         is_speaking = False
 
-        async def to_controller(message: str):
+        async def to_controller(message: str) -> None:
             await speaking_stream.info('v', 'c', message)
 
-        def callback(outdata, frames, time, status):
+        def callback(outdata, frames, time, status) -> None:
             nonlocal pcm_format, audio_queue, excess_queue, is_speaking
 
             old_is_speaking = is_speaking
@@ -219,6 +216,7 @@ class View:
 
         audio_stream = sd.OutputStream(
             callback=callback,
+            device=self.output_device,
             samplerate=self.tts_samplerate,
             channels=self.tts_num_channels,
             dtype=pcm_format)
@@ -234,7 +232,7 @@ class View:
                     fwk.clear_queue(excess_queue)
                     fwk.clear_queue(audio_queue)
 
-        async def on_close(value) -> None:
+        async def on_close(value: Any) -> None:
             audio_stream.stop()
 
         async def speaking_process() -> None:

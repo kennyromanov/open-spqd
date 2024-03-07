@@ -41,8 +41,9 @@ class Controller:
             input_sensitivity: int = 75,
             input_samplerate: int = 16000,
             input_num_channels: int = 1,
-            assistant_handler: AsstHandler = None
-    ):
+            output_device: str | int = 0,
+            assistant_handler: AsstHandler = None,
+    ) -> None:
         if not assistant_handler:
             assistant_handler = base_handler
 
@@ -51,13 +52,15 @@ class Controller:
         self.input_sensitivity = input_sensitivity
         self.input_samplerate = input_samplerate
         self.input_num_channels = input_num_channels
+        self.output_device = output_device
         self.assistant_handler = assistant_handler
         self.view: View = View(
-            input_device=self.input_device,
-            input_sensitivity=self.input_sensitivity,
-            tts_voice=self.tts_voice,
             stt_samplerate=self.input_samplerate,
             stt_num_channels=self.input_num_channels,
+            tts_voice=self.tts_voice,
+            input_device=self.input_device,
+            input_sensitivity=self.input_sensitivity,
+            output_device=self.output_device
         )
         self.pcm_format = np.int32
         self.hearing_stream = None
