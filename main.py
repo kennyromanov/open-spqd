@@ -29,14 +29,11 @@ async def main() -> None:
     if output_device == '_default':
         output_device = fwk.default_output(True)
 
-    # await Controller(
-    #     tts_voice=tts_voice,
-    #     input_device=input_device,  # AirPods — Kenny R
-    #     input_sensitivity=input_sensitivity,
-    #     output_device=output_device,
-    # ).start()
+    input_stream = fwk.record_audio(input_device)
+    output_stream = fwk.Stream()
 
-    await Assistant().start()
+    await Assistant(input_stream, output_stream).start()
+    await input_stream.coroutine
 
 
 asyncio.run(main())

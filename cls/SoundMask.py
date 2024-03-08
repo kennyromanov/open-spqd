@@ -1,7 +1,7 @@
 import math
 import asyncio
 import numpy as np
-import tensorflow as tf
+import tensorflow_io as tfio
 import fwk
 from io import BytesIO
 from typing import List, Callable, Awaitable, Any
@@ -77,7 +77,7 @@ def detect_voice(wav_bytes: bytes) -> float:
 
     # Resample if the samplerate is different from 16000
     if samplerate != 16000:
-        audio_np = tf.signal.resample(audio_np, int(len(audio_np) * 16000 / samplerate))
+        audio_np = tfio.audio.resample(audio_np, samplerate, 16000)
 
     # Processing the audio
     analyze = yamnet.analyze(audio_np)
@@ -282,6 +282,9 @@ class SoundMask:
 
                 # Calculating the value
                 input_wav = await self.handlers[inst_name](input_wav, inst_value)
+()
+                # print(f'\n\n{inst_name}')
+                # print(input_wav)
 
                 if input_wav in (BYTE_TRUE, BYTE_FALSE):
                     break

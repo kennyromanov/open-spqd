@@ -300,7 +300,6 @@ def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, str]:
 
 # Framework
 
-
 def path(*items):
     root = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(root, *items)
