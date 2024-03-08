@@ -1,16 +1,13 @@
 import os
 import sys
 import subprocess
-import math
 import re
 import asyncio
 import typing
-import pydub
 import wave
-import sounddevice as sd
-import numpy as np
 import redis
 import openai
+import sounddevice as sd
 from io import BytesIO
 from typing import Any, List, Callable, Tuple
 from pydub import AudioSegment
@@ -193,6 +190,57 @@ def stdout() -> Stream:
     return stdout_stream
 
 
+def default_input(strict: bool = False) -> Any:
+    try:
+        device = sd.query_devices(kind='input')
+        return device['index']
+    except Exception as e:
+        if strict:
+            raise e
+
+        return None
+
+
+def default_output(strict: bool = False) -> Any:
+    try:
+        device = sd.query_devices(kind='output')
+        return device['index']
+    except Exception as e:
+        if strict:
+            raise e
+
+        return None
+
+
+def pcm_to_wav(pcm_bytes: bytes, samplerate: int, num_channels: int) -> bytes:
+    wav_io = BytesIO()
+
+    # Encoding the audio
+    with wave.open(wav_io, 'wb') as wav_file:
+        wav_file.setnchannels(num_channels)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(samplerate)
+        wav_file.writeframes(pcm_bytes)
+
+    wav_io.seek(0)
+
+    return wav_io.getvalue()
+
+
+def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, str]:
+    wav_file = BytesIO(wav_bytes)
+
+    # Decoding the audio
+    audio_segment = AudioSegment.from_file(wav_file, format='wav')
+
+    pcm_bytes = audio_segment.raw_data
+    samplerate = audio_segment.frame_rate
+    num_channels = audio_segment.channels
+    array_type = audio_segment.array_type
+
+    return pcm_bytes, samplerate, num_channels, array_type
+
+
 def record_audio(
         input_device: str | int,
         samplerate: int = 16000,
@@ -239,63 +287,6 @@ def record_audio(
     recording_stream.task(recording_task)
 
     return recording_stream
-
-
-def default_input(strict: bool = False) -> Any:
-    try:
-        device = sd.query_devices(kind='input')
-        return device['index']
-    except Exception as e:
-        if strict:
-            raise e
-
-        return None
-
-
-def default_output(strict: bool = False) -> Any:
-    try:
-        device = sd.query_devices(kind='output')
-        return device['index']
-    except Exception as e:
-        if strict:
-            raise e
-
-        return None
-
-
-def to_pcm(audio_bytes: bytes, format_name: str) -> bytes:
-    file_ogg = BytesIO(audio_bytes)
-    audio = pydub.AudioSegment.from_file(file_ogg, format=format_name)
-    pcm_bytes = audio.raw_data
-    return pcm_bytes
-
-
-def pcm_to_wav(pcm_bytes: bytes, samplerate: int, num_channels: int) -> BytesIO:
-    wav_io = BytesIO()
-
-    # Encoding the audio
-    with wave.open(wav_io, 'wb') as wav_file:
-        wav_file.setnchannels(num_channels)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(samplerate)
-        wav_file.writeframes(pcm_bytes)
-
-    wav_io.seek(0)
-
-    return wav_io
-
-
-def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, str]:
-    wav_file = BytesIO(wav_bytes)
-
-    audio_segment = AudioSegment.from_file(wav_file, format='wav')
-
-    pcm_bytes = audio_segment.raw_data
-    samplerate = audio_segment.frame_rate
-    num_channels = audio_segment.channels
-    array_type = audio_segment.array_type
-
-    return pcm_bytes, samplerate, num_channels, array_type
 
 
 # Framework

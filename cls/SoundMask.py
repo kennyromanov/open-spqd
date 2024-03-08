@@ -41,7 +41,7 @@ BYTE_TRUE = b'\x01'
 def calc_duration(wav_bytes: bytes) -> float:
     wav_file = BytesIO(wav_bytes)
     audio_segment = AudioSegment.from_file(wav_file, format='wav')
-    return len(audio_segment) / 1000
+    return audio_segment.duration_seconds
 
 
 def calc_volume(wav_bytes: bytes) -> float:
@@ -113,11 +113,31 @@ async def op_first_sec(wav_bytes: bytes, value: float) -> bytes:
 
 async def op_last_sec(wav_bytes: bytes, value: float) -> bytes:
     duration = calc_duration(wav_bytes)
+
+    if duration < value:
+        return BYTE_FALSE
+
     return trim_audio(wav_bytes, duration - value, duration)
 
 
 async def op_delay_sec(wav_bytes: bytes, value: float) -> bytes:
     duration = calc_duration(wav_bytes)
+
+    if duration < value:
+        return BYTE_FALSE
+
+    return trim_audio(wav_bytes, value, duration)
+
+
+async def op_every_sec(wav_bytes: bytes, value: float) -> bytes:
+    duration = calc_duration(wav_bytes)
+
+    if duration % value < 0.2:
+        return BYTE_FALSE
+
+    if duration < value:
+        return BYTE_FALSE
+
     return trim_audio(wav_bytes, value, duration)
 
 
@@ -149,6 +169,7 @@ class SoundMask:
             'FIRST SEC': op_first_sec,
             'LAST SEC': op_last_sec,
             'DELAY SEC': op_delay_sec,
+            'EVERY SEC': op_every_sec,
             'VOLUME ABOVE': op_volume_above,
             'VOLUME BELOW': op_volume_below,
             'VOICE ABOVE': op_voice_above,
@@ -158,7 +179,7 @@ class SoundMask:
         self.callbacks = callbacks
 
     def to_instructions(self, expression: str) -> List[str]:
-        instructions: List[str] = []
+        instructions: List[str] = ['DELAY SEC 0.3']
         buffer = ''
 
         def commit() -> None:
@@ -194,6 +215,9 @@ class SoundMask:
                 case '||':
                     value = float(value)
                     instruction = f'DELAY SEC {value}'
+                case '**':
+                    value = float(value)
+                    instruction = f'EVERY SEC {value}'
                 case '^^':
                     value = int(value)
                     instruction = f'VOLUME ABOVE {value}'
@@ -282,9 +306,9 @@ class SoundMask:
 
                 # Calculating the value
                 input_wav = await self.handlers[inst_name](input_wav, inst_value)
-()
+
                 # print(f'\n\n{inst_name}')
-                # print(input_wav)
+                # print(input_wav != BYTE_FALSE)
 
                 if input_wav in (BYTE_TRUE, BYTE_FALSE):
                     break
