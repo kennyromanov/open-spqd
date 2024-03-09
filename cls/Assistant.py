@@ -1,6 +1,41 @@
 import fwk
-from typing import Any
+from typing import Any, Callable, Awaitable
 from .SoundMask import SoundMask, calc_duration
+
+
+class AssistantState:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
+AssistantHandler = Callable[[AssistantState], fwk.Stream]
+
+
+def base_handler(state: AssistantState) -> fwk.Stream:
+    answering_stream = fwk.asst(state.message)
+    output_stream = fwk.Stream()
+    bot_message = ''
+
+    print(f'(?) "{state.message}"')
+    print(f'(>) ', end='')
+
+    async def on_data(delta: fwk.AsstDelta) -> None:
+        nonlocal output_stream, bot_message
+
+        if delta.type == 'stop':
+            print()
+            await output_stream.close()
+            return
+
+        bot_message += delta.text
+        print(delta.text, end='')
+
+        await output_stream.write(delta.text)
+
+    answering_stream.on('data', on_data)
+    output_stream.task(answering_stream.coroutine)
+
+    return output_stream
 
 
 class Assistant:
@@ -8,11 +43,14 @@ class Assistant:
             self,
             input_stream: fwk.Stream,
             output_stream: fwk.Stream,
+            assistant_handler: AssistantHandler = None,
             activation_mask: str = None,
             deactivation_mask: str = None,
             speaking_mask: str = None,
             interruption_mask: str = None,
     ) -> None:
+        if assistant_handler is None:
+            assistant_handler = base_handler
         if activation_mask is None:
             activation_mask = ('<<.5--^^30--')
         if deactivation_mask is None:
@@ -24,13 +62,14 @@ class Assistant:
 
         self.input_stream = input_stream
         self.output_stream = output_stream
+        self.assistant_handler = assistant_handler
         self.activation_mask = activation_mask
         self.deactivation_mask = deactivation_mask
         self.speaking_mask = speaking_mask
         self.interruption_mask = interruption_mask
 
     def log(self, message: str) -> None:
-        print(f'(a) {message}')
+        print(f'(c) {message}')
 
     async def start(self) -> None:
         record_buffer = bytearray()
@@ -50,18 +89,32 @@ class Assistant:
         speaking_mask = SoundMask(self.speaking_mask, {'SV': sv_callback})
         interruption_mask = SoundMask(self.interruption_mask, {'SV': sv_callback})
 
-        async def commit(wav_bytes: bytes) -> None:
-            tts_stream = fwk.tts('tts-1', 'nova', 'Тщательно проверяем любые веганские товары: еду, косметику, товары гигиены и бытовую химию. Помогаем веганизировать образ жизни взрослых, детей и питомцев. Постоянно учимся новому и делимся этим с вами.')
+        async def commit(pcm_bytes: bytes) -> None:
+            wav_bytes = fwk.pcm_to_wav(pcm_bytes, 16000, 1)
 
-            async def tts_on_data(ogg_chunk: bytes) -> None:
-                tts_bytes = fwk.audio_to_wav(ogg_chunk, 'ogg')
-                await self.output_stream.write(tts_bytes)
+            state = AssistantState(
+                message=fwk.stt('whisper-1', wav_bytes, 'Обычная речь, разделенная запятыми.')
+            )
+            answering_stream = self.assistant_handler(state)
 
-            tts_stream.on('data', tts_on_data)
-            tts_stream.on('info', on_info)
-            tts_stream.on('error', on_error)
+            async def answering_on_data(text_chunk: str):
+                tts_stream = fwk.tts('tts-1', 'nova', text_chunk)
 
-            await tts_stream.coroutine
+                async def tts_on_data(ogg_chunk: bytes) -> None:
+                    tts_bytes = fwk.audio_to_wav(ogg_chunk, 'ogg')
+                    await self.output_stream.write(tts_bytes)
+
+                tts_stream.on('data', tts_on_data)
+                tts_stream.on('info', on_info)
+                tts_stream.on('error', on_error)
+
+                await tts_stream.coroutine
+
+            answering_stream.on('data', answering_on_data)
+            answering_stream.on('info', on_info)
+            answering_stream.on('error', on_error)
+
+            await answering_stream.coroutine
 
         async def on_data(pcm_chunk: bytes) -> None:
             nonlocal \

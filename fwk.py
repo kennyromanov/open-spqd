@@ -296,11 +296,15 @@ def record_audio(
     return recording_stream
 
 
-def play_audio(output_device: int | str = 0, samplerate: int = 48000, num_channels: int = 2, array_type: str = 'int32') -> Stream:
+def play_audio(
+        output_device: int | str = 0,
+        samplerate: int = 48000,
+        num_channels: int = 2,
+        array_type: str = 'int32'
+) -> Stream:
     audio_queue = Queue()
     play_queue = Queue()
-    playing_stream = Stream()
-    stdout_stream = stdout()
+    input_stream = Stream()
 
     # The play callback
     def callback(outdata, frames, time, status) -> None:
@@ -310,12 +314,10 @@ def play_audio(output_device: int | str = 0, samplerate: int = 48000, num_channe
         # Filling the output with zeros by default
         outdata.fill(0)
 
-        # If there is no audio - return
-        if audio_queue.empty():
-            return
-
         # If there is no play - get it
         if play_queue.empty():
+            if audio_queue.empty():
+                return
             np_audio = audio_queue.get()
             play_queue.put(np_audio)
 
@@ -327,6 +329,8 @@ def play_audio(output_device: int | str = 0, samplerate: int = 48000, num_channe
 
         # Filling the output with the audio
         outdata[:len(play_audio)] = play_audio
+
+        play_queue.task_done()
 
         # Putting the excess data back to queue
         if len(excess_audio) > 0:
@@ -377,15 +381,15 @@ def play_audio(output_device: int | str = 0, samplerate: int = 48000, num_channe
         audio_stream.start()
 
     # Working with stream
-    playing_stream.on('data', on_data)
-    playing_stream.on('info', on_info)
-    playing_stream.on('close', on_close)
+    input_stream.on('data', on_data)
+    input_stream.on('info', on_info)
+    input_stream.on('close', on_close)
 
     # Instantly returning the stream
     playing_task = asyncio.create_task(playing_process())
-    playing_stream.task(playing_task)
+    input_stream.task(playing_task)
 
-    return playing_stream
+    return input_stream
 
 
 # Framework
@@ -435,11 +439,14 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
     return audio_stream
 
 
-def stt(model: SttModel, input_wav: BytesIO, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
+def stt(model: SttModel, wav_bytes: bytes, prompt: str = 'Just a regular speech, separated by commas.') -> str:
+    wav_file = BytesIO(wav_bytes)
+    wav_file.name = 'audio.wav'
+
     # Querying the API
     response = openai.audio.transcriptions.create(
         model=model,
-        file=input_wav,
+        file=wav_file,
         prompt=prompt,
     )
 
@@ -533,6 +540,7 @@ def asst(message: str, funcs: List[AsstTool] = None) -> Stream:
         )
 
         await answering_stream.write(asst_delta)
+        await answering_stream.close()
 
     async def gpt_on_error(e) -> None:
         await answering_stream.error(e)

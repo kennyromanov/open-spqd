@@ -44,6 +44,7 @@ async def main() -> None:
     try:
         await Assistant(input_stream, output_stream).start()
         await input_stream.coroutine
+        await output_stream.coroutine
     except asyncio.CancelledError:
         pass
     except KeyboardInterrupt:
