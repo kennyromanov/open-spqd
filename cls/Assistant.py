@@ -41,32 +41,32 @@ def base_handler(state: AssistantState) -> fwk.Stream:
 class Assistant:
     def __init__(
             self,
+            voice: fwk.TtsVoice,
+            sensitivity: int,
             input_stream: fwk.Stream,
             output_stream: fwk.Stream,
             assistant_handler: AssistantHandler = None,
             activation_mask: str = None,
             deactivation_mask: str = None,
             speaking_mask: str = None,
-            interruption_mask: str = None,
     ) -> None:
         if assistant_handler is None:
             assistant_handler = base_handler
         if activation_mask is None:
-            activation_mask = ('<<.5--^^30--')
+            activation_mask = f'<<.5--^^{100-sensitivity}--'
         if deactivation_mask is None:
-            deactivation_mask = ('<<1--vv30--')
+            deactivation_mask = f'<<1--vv{100-sensitivity}--'
         if speaking_mask is None:
-            speaking_mask = ('<<2--VOICE--')
-        if interruption_mask is None:
-            interruption_mask = ('<<.3--VOICE--')
+            speaking_mask = '<<2--VOICE--'
 
+        self.voice = voice
+        self.sensitivity = sensitivity
         self.input_stream = input_stream
         self.output_stream = output_stream
         self.assistant_handler = assistant_handler
         self.activation_mask = activation_mask
         self.deactivation_mask = deactivation_mask
         self.speaking_mask = speaking_mask
-        self.interruption_mask = interruption_mask
 
     def log(self, message: str) -> None:
         print(f'(c) {message}')
@@ -87,7 +87,10 @@ class Assistant:
         activation_mask = SoundMask(self.activation_mask, {'SV': sv_callback})
         deactivation_mask = SoundMask(self.deactivation_mask, {'SV': sv_callback})
         speaking_mask = SoundMask(self.speaking_mask, {'SV': sv_callback})
-        interruption_mask = SoundMask(self.interruption_mask, {'SV': sv_callback})
+
+        # The messenger function
+        async def player(message: str) -> None:
+            await self.output_stream.info('assistant', 'player', message)
 
         async def commit(pcm_bytes: bytes) -> None:
             wav_bytes = fwk.pcm_to_wav(pcm_bytes, 16000, 1)
@@ -98,7 +101,7 @@ class Assistant:
             answering_stream = self.assistant_handler(state)
 
             async def answering_on_data(text_chunk: str):
-                tts_stream = fwk.tts('tts-1', 'nova', text_chunk)
+                tts_stream = fwk.tts('tts-1', self.voice, text_chunk)
 
                 async def tts_on_data(ogg_chunk: bytes) -> None:
                     tts_bytes = fwk.audio_to_wav(ogg_chunk, 'ogg')
@@ -119,7 +122,7 @@ class Assistant:
         async def on_data(pcm_chunk: bytes) -> None:
             nonlocal \
                 record_buffer, commit_buffer, \
-                activation_mask, deactivation_mask, speaking_mask, interruption_mask, \
+                activation_mask, deactivation_mask, speaking_mask, \
                 next_nn_time, next_start_time, is_recording, is_proved, is_bot_speaking
 
             record_buffer.extend(pcm_chunk)
@@ -133,7 +136,6 @@ class Assistant:
             is_activated = await activation_mask.test(wav_recording) if do_record else False
             is_deactivated = await deactivation_mask.test(wav_recording) if is_recording else False
             is_speaking = await speaking_mask.test(wav_recording) if do_prove_speaking else True
-            is_interrupted = await interruption_mask.test(wav_recording) if is_bot_speaking else False
 
             # If recording started
             if is_activated and not is_recording:
@@ -152,6 +154,11 @@ class Assistant:
                 if not is_proved:
                     self.log('Checked you... OK')
 
+                # If interrupted - immediately stop speaking
+                if is_bot_speaking:
+                    self.log('Interrupted')
+                    await player('order:stop')
+
                 is_proved = True
                 next_nn_time = recording_duration + 3
 
@@ -166,13 +173,19 @@ class Assistant:
                 is_recording = False
                 next_start_time = recording_duration + 1
 
-            # # If interrupted
-            # if is_interrupted and is_recording:
-            #     self.log('Interrupted')
-            #     is_recording = False
-
         async def on_info(bus: fwk.StreamBus) -> None:
-            pass
+            nonlocal is_bot_speaking
+
+            if bus.name_to not in ('assistant', ''):
+                return
+
+            match bus.name_from:
+                case 'player':
+                    match bus.data:
+                        case 'event:play':
+                            is_bot_speaking = True
+                        case 'event:stop':
+                            is_bot_speaking = False
 
         async def on_error(e: Exception) -> None:
             self.log(f'Unexpected error: {e}\n')
@@ -180,6 +193,7 @@ class Assistant:
 
         self.input_stream.on('data', on_data)
         self.input_stream.on('info', on_info)
+        self.output_stream.on('info', on_info)
         self.input_stream.on('error', on_error)
 
         print('==== Session started ====')

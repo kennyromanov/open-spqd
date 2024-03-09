@@ -11,17 +11,17 @@ from argparse import ArgumentParser
 from cls import Assistant
 
 parser = ArgumentParser()
-parser.add_argument("--voice", default="alloy")
-parser.add_argument("--sensitivity", default="60")
+parser.add_argument("--voice", default="nova")
+parser.add_argument("--sensitivity", default="70")
 parser.add_argument("--input", default="_default")
 parser.add_argument("--output", default="_default")
 args = parser.parse_args()
 
 
 async def main() -> None:
-    tts_voice = str(args.voice)
+    voice = str(args.voice)
+    sensitivity = str(args.sensitivity)
     input_device = str(args.input)
-    input_sensitivity = int(args.sensitivity)
     output_device = str(args.output)
 
     if input_device == '_default':
@@ -42,7 +42,12 @@ async def main() -> None:
             output_stream = fwk.play_audio(output_device, 48000, 1)
 
     try:
-        await Assistant(input_stream, output_stream).start()
+        await Assistant(
+            str(voice),
+            int(sensitivity),
+            input_stream,
+            output_stream
+        ).start()
         await input_stream.coroutine
         await output_stream.coroutine
     except asyncio.CancelledError:

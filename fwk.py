@@ -305,21 +305,40 @@ def play_audio(
     audio_queue = Queue()
     play_queue = Queue()
     input_stream = Stream()
+    is_playing = False
+
+    # The messenger function
+    async def info(message: str) -> None:
+        await input_stream.info('player', '', message)
 
     # The play callback
     def callback(outdata, frames, time, status) -> None:
+        nonlocal audio_queue, play_queue, is_playing
+
         if status:
             return
 
         # Filling the output with zeros by default
         outdata.fill(0)
 
+        prv_is_playing = is_playing
+
         # If there is no play - get it
         if play_queue.empty():
             if audio_queue.empty():
+                is_playing = False
+
+                if not is_playing and prv_is_playing:
+                    asyncio.run(info('event:stop'))
                 return
             np_audio = audio_queue.get()
             play_queue.put(np_audio)
+
+        # Doing some checks
+        is_playing = True
+
+        if is_playing and not prv_is_playing:
+            asyncio.run(info('event:play'))
 
         # Trying to get the numpy audio
         np_play = play_queue.get()
