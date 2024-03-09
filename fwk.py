@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import platform
 import re
 import asyncio
 import typing
@@ -28,6 +29,11 @@ openai.api_key = os.environ.get("OPENAI_API_KEY")
 # Types
 
 T = typing.TypeVar('T')
+
+Platform = typing.Literal[
+    'Linux',
+    'Darwin',
+]
 
 GptModel = typing.Literal[
     'gpt-3.5-turbo-0125',
@@ -147,6 +153,15 @@ def error(message: str) -> SpqdError:
     return SpqdError(message)
 
 
+def platform_name() -> Platform:
+    name = platform.system()
+
+    if name not in ('Linux', 'Darwin'):
+        raise error(f'Your platform {name} is unrecognized. Please, adapt the Spqd for your use.')
+
+    return typing.cast(Platform, name)
+
+
 def clear_queue(queue: Queue) -> None:
     while not queue.empty():
         queue.get_nowait()
@@ -257,12 +272,21 @@ def record_audio(
         samplerate: int = 16000,
         num_channels: int = 1
 ) -> Stream:
+    driver = ''
+
+    match platform_name():
+        case 'Linux':
+            driver = 'pulse'
+        case 'Darwin':
+            driver = 'avfoundation'
+            input_device = f':{input_device}'
+
     command = [
         'ffmpeg',
-        '-f', 'avfoundation',
-        '-i', f':{input_device}',
-        '-ac', f'{num_channels}',
-        '-ar', f'{samplerate}',
+        '-f', str(driver),
+        '-i', str(input_device),
+        '-ac', str(num_channels),
+        '-ar', str(samplerate),
         '-f', 's16le',
         '-acodec', 'pcm_s16le',
         '-'
