@@ -179,7 +179,7 @@ class SoundMask:
         self.callbacks = callbacks
 
     def to_instructions(self, expression: str) -> List[str]:
-        instructions: List[str] = ['DELAY SEC 0.3']
+        instructions: List[str] = ['DELAY SEC 0.1']
         buffer = ''
 
         def commit() -> None:

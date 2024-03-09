@@ -7,9 +7,12 @@ import typing
 import wave
 import redis
 import openai
+import colorama
 import sounddevice as sd
+import numpy as np
 from io import BytesIO
 from typing import Any, List, Callable, Tuple
+from queue import Queue
 from pydub import AudioSegment
 from dotenv import load_dotenv
 
@@ -144,12 +147,9 @@ def error(message: str) -> SpqdError:
     return SpqdError(message)
 
 
-def clear_queue(asyncio_queue: asyncio.Queue) -> None:
-    while not asyncio_queue.empty():
-        try:
-            asyncio_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+def clear_queue(queue: Queue) -> None:
+    while not queue.empty():
+        queue.get_nowait()
 
 
 def stdin() -> Stream:
@@ -212,6 +212,24 @@ def default_output(strict: bool = False) -> Any:
         return None
 
 
+def audio_to_pcm(audio_bytes: bytes, audio_format: str) -> Tuple[bytes, int, int, str]:
+    audio_file = BytesIO(audio_bytes)
+
+    # Decoding the audio
+    audio_segment = AudioSegment.from_file(audio_file, format=audio_format)
+
+    pcm_bytes = audio_segment.raw_data
+    samplerate = audio_segment.frame_rate
+    num_channels = audio_segment.channels
+    array_type = audio_segment.array_type
+
+    return pcm_bytes, samplerate, num_channels, array_type
+
+
+def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, str]:
+    return audio_to_pcm(wav_bytes, 'wav')
+
+
 def pcm_to_wav(pcm_bytes: bytes, samplerate: int, num_channels: int) -> bytes:
     wav_io = BytesIO()
 
@@ -227,18 +245,11 @@ def pcm_to_wav(pcm_bytes: bytes, samplerate: int, num_channels: int) -> bytes:
     return wav_io.getvalue()
 
 
-def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, str]:
-    wav_file = BytesIO(wav_bytes)
+def audio_to_wav(audio_bytes: bytes, audio_format: str) -> bytes:
+    pcm_bytes, samplerate, num_channels, array_type = audio_to_pcm(audio_bytes, audio_format)
+    wav_bytes = pcm_to_wav(pcm_bytes, samplerate, num_channels)
 
-    # Decoding the audio
-    audio_segment = AudioSegment.from_file(wav_file, format='wav')
-
-    pcm_bytes = audio_segment.raw_data
-    samplerate = audio_segment.frame_rate
-    num_channels = audio_segment.channels
-    array_type = audio_segment.array_type
-
-    return pcm_bytes, samplerate, num_channels, array_type
+    return wav_bytes
 
 
 def record_audio(
@@ -256,10 +267,6 @@ def record_audio(
         '-acodec', 'pcm_s16le',
         '-'
     ]
-
-    # If the input is stdin - return the stdin stream
-    if input_device == '-':
-        return stdin()
 
     # Opening the streams
     ffmpeg = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -289,7 +296,134 @@ def record_audio(
     return recording_stream
 
 
+def play_audio(
+        output_device: int | str = 0,
+        samplerate: int = 48000,
+        num_channels: int = 2,
+        array_type: str = 'int32'
+) -> Stream:
+    audio_queue = Queue()
+    play_queue = Queue()
+    input_stream = Stream()
+    is_playing = False
+
+    # The messenger function
+    async def info(message: str) -> None:
+        await input_stream.info('player', '', message)
+
+    # The play callback
+    def callback(outdata, frames, time, status) -> None:
+        nonlocal audio_queue, play_queue, is_playing
+
+        if status:
+            return
+
+        # Filling the output with zeros by default
+        outdata.fill(0)
+
+        prv_is_playing = is_playing
+
+        # If there is no play - get it
+        if play_queue.empty():
+            if audio_queue.empty():
+                is_playing = False
+
+                if not is_playing and prv_is_playing:
+                    asyncio.run(info('event:stop'))
+                return
+            np_audio = audio_queue.get()
+            play_queue.put(np_audio)
+
+        # Doing some checks
+        is_playing = True
+
+        if is_playing and not prv_is_playing:
+            asyncio.run(info('event:play'))
+
+        # Trying to get the numpy audio
+        np_play = play_queue.get()
+
+        play_audio = np_play[:frames]
+        excess_audio = np_play[frames:]
+
+        # Filling the output with the audio
+        outdata[:len(play_audio)] = play_audio
+
+        play_queue.task_done()
+
+        # Putting the excess data back to queue
+        if len(excess_audio) > 0:
+            play_queue.put(excess_audio)
+
+    # Opening the SD stream
+    audio_stream = sd.OutputStream(
+        callback=callback,
+        device=output_device,
+        samplerate=samplerate,
+        channels=num_channels,
+        dtype=array_type
+    )
+
+    # The stream callbacks
+    async def on_data(wav_bytes: bytes) -> None:
+        nonlocal samplerate, num_channels, audio_queue
+
+        pcm_bytes, pcm_samplerate, pcm_num_channels, pcm_array_type = wav_to_pcm(wav_bytes)
+
+        if pcm_samplerate != samplerate:
+            raise error(f"The written samplerate '{pcm_samplerate}' does not match the initial samplerate '{samplerate}'")
+        if pcm_num_channels != num_channels:
+            raise error(f"The written num channels '{pcm_num_channels}' does not match the initial num channels '{num_channels}'")
+
+        np_bytes = np.frombuffer(pcm_bytes, dtype=array_type)
+
+        channel_length = int(len(np_bytes) / num_channels)
+        np_bytes = np_bytes.reshape(channel_length, num_channels)
+
+        audio_queue.put(np_bytes)
+
+    async def on_info(bus: StreamBus) -> None:
+        if bus.name_to != 'player':
+            return
+
+        match bus.data:
+            case 'order:stop':
+                clear_queue(audio_queue)
+                clear_queue(play_queue)
+            case 'order:pause':
+                pass
+
+    async def on_close() -> None:
+        audio_stream.stop()
+
+    async def playing_process() -> None:
+        audio_stream.start()
+
+    # Working with stream
+    input_stream.on('data', on_data)
+    input_stream.on('info', on_info)
+    input_stream.on('close', on_close)
+
+    # Instantly returning the stream
+    playing_task = asyncio.create_task(playing_process())
+    input_stream.task(playing_task)
+
+    return input_stream
+
+
 # Framework
+
+def gray(message):
+    return colorama.Fore.LIGHTBLACK_EX + message + colorama.Style.RESET_ALL
+
+
+def green(message):
+    return colorama.Fore.GREEN + message + colorama.Style.RESET_ALL
+
+
+def red(message):
+    return colorama.Fore.RED + message + colorama.Style.RESET_ALL
+
 
 def path(*items):
     root = os.path.dirname(os.path.abspath(__file__))
@@ -308,7 +442,7 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
             model=model,
             voice=voice,
             input=input_text,
-            response_format="opus",
+            response_format='opus',
         )
 
         # Streaming the audio
@@ -324,11 +458,14 @@ def tts(model: TtsModel, voice: TtsVoice, input_text: str) -> Stream:
     return audio_stream
 
 
-def stt(model: SttModel, input_wav: BytesIO, prompt: str = 'Обычная речь, разделенная запятыми.') -> str:
+def stt(model: SttModel, wav_bytes: bytes, prompt: str = 'Just a regular speech, separated by commas.') -> str:
+    wav_file = BytesIO(wav_bytes)
+    wav_file.name = 'audio.wav'
+
     # Querying the API
     response = openai.audio.transcriptions.create(
         model=model,
-        file=input_wav,
+        file=wav_file,
         prompt=prompt,
     )
 
@@ -422,6 +559,7 @@ def asst(message: str, funcs: List[AsstTool] = None) -> Stream:
         )
 
         await answering_stream.write(asst_delta)
+        await answering_stream.close()
 
     async def gpt_on_error(e) -> None:
         await answering_stream.error(e)
