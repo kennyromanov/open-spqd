@@ -29,11 +29,25 @@ async def main() -> None:
     if output_device == '_default':
         output_device = fwk.default_output(True)
 
-    input_stream = fwk.record_audio(input_device)
-    output_stream = fwk.Stream()
+    match input_device:
+        case '-':
+            input_stream = fwk.stdin()
+        case _:
+            input_stream = fwk.record_audio(input_device)
 
-    await Assistant(input_stream, output_stream).start()
-    await input_stream.coroutine
+    match output_device:
+        case '-':
+            output_stream = fwk.stdout()
+        case _:
+            output_stream = fwk.play_audio(output_device, 48000, 1)
+
+    try:
+        await Assistant(input_stream, output_stream).start()
+        await input_stream.coroutine
+    except asyncio.CancelledError:
+        pass
+    except KeyboardInterrupt:
+        pass
 
 
 asyncio.run(main())

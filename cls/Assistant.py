@@ -51,7 +51,17 @@ class Assistant:
         interruption_mask = SoundMask(self.interruption_mask, {'SV': sv_callback})
 
         async def commit(wav_bytes: bytes) -> None:
-            pass
+            tts_stream = fwk.tts('tts-1', 'nova', 'Тщательно проверяем любые веганские товары: еду, косметику, товары гигиены и бытовую химию. Помогаем веганизировать образ жизни взрослых, детей и питомцев. Постоянно учимся новому и делимся этим с вами.')
+
+            async def tts_on_data(ogg_chunk: bytes) -> None:
+                tts_bytes = fwk.audio_to_wav(ogg_chunk, 'ogg')
+                await self.output_stream.write(tts_bytes)
+
+            tts_stream.on('data', tts_on_data)
+            tts_stream.on('info', on_info)
+            tts_stream.on('error', on_error)
+
+            await tts_stream.coroutine
 
         async def on_data(pcm_chunk: bytes) -> None:
             nonlocal \
@@ -79,14 +89,15 @@ class Assistant:
 
                 is_recording = True
                 is_proved = False
+                do_prove_speaking = False
                 next_nn_time = recording_duration + 1
 
             # If prove speaking
             if do_prove_speaking and is_speaking:
                 if is_proved:
-                    self.log('Checked you')
+                    self.log('Checking you...')
                 if not is_proved:
-                    self.log('Checked you - speech proved')
+                    self.log('Checked you... OK')
 
                 is_proved = True
                 next_nn_time = recording_duration + 3
@@ -94,10 +105,10 @@ class Assistant:
             # If recording ended
             if (is_deactivated and is_recording) or (not is_speaking and is_recording):
                 if is_proved:
-                    self.log('Commited')
+                    self.log(fwk.green('Commited'))
                     await commit(commit_buffer)
                 if not is_proved:
-                    self.log('Rejected - speech not proved')
+                    self.log(fwk.red('Rejected - speech not proved'))
 
                 is_recording = False
                 next_start_time = recording_duration + 1
@@ -107,7 +118,7 @@ class Assistant:
             #     self.log('Interrupted')
             #     is_recording = False
 
-        async def on_info(message: str) -> None:
+        async def on_info(bus: fwk.StreamBus) -> None:
             pass
 
         async def on_error(e: Exception) -> None:
