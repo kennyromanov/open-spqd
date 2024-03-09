@@ -1,15 +1,15 @@
 # Open Spqd
 
-**Spqd** is an open sound analysis algorithm to creating an advanced voice assistants, call robots, IVR, and many-many other cool stuff. It's like you're having a conversation with your friend—a real person without having a messy Q/A interface and a robot-like talking.
+**Spqd** is an open-source audio analysis algorithm for creating advanced voice assistants, call robots, IVR, real-world agents and many, many other cool stuff. It's like talking to your real—life friend without having a messy Q/A interface and robotic speech.
 
-To use a Spqd you need:
+To use Spqd you need:
 
-1. **macOS 12** or later (the support of other machines come later)
-2. **Python 3.11** or later
-3. **ffmpeg 6.1.1** or later
-4. An **OpenAI** account or a program that will handle the dialogue flow 
+1. **macOS 10.7**, **Linux PulseAudio 1.0** or later (the support of other machines come later)
+2. **Python 3.10** or later
+3. **ffmpeg 2.2** or later
+4. An **OpenAI** account or a script that will handle [the Assistant](cls/Assistant.py) 
 
-To set up a Spqd you have to:
+To set up Spqd you have to:
 
 1. Clone this repository into a desired folder:  
 `$ cd /path/to/your/folder`  
@@ -19,19 +19,19 @@ To set up a Spqd you have to:
 `$ doc/create_venv.sh`
 3. Install [requirements](doc/requirements.txt):  
 `$ pip3 install -r doc/requirements.txt`
-4. Set up an environment variables:  
+4. Set up environment variables:  
 `$ cp doc/.env.bak .env`  
 `$ vim .env`
-5. Run it:  
-`$ python3 main.py`
+5. Run:  
+`$ bin/spqd`
 
 You can also add Spqd to your PATH if you like:
 ```
 PATH="/path/to/open-spqd/bin:${PATH}"
 ```
 
-You succeeded!
+You did it!
 
 ---
-**Open Spqd** v1.0 (Alpha)  
+**Open Spqd** v1.2 (Alpha)  
 by Kenny R
