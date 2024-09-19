@@ -16,11 +16,11 @@ To set up Spqd you have to:
 `$ gh repo clone kennyromanov/open-spqd`
 2. Create a python virtual environment:  
 `$ cd open-spqd`  
-`$ doc/create_venv.sh`
+`$ bin/create-venv`
 3. Install [requirements](doc/requirements.txt):  
-`$ pip3 install -r doc/requirements.txt`
+`$ pip3 install -r requirements.txt`
 4. Set up environment variables:  
-`$ cp doc/.env.bak .env`  
+`$ cp .env.example .env`  
 `$ vim .env`
 5. Run:  
 `$ bin/spqd`

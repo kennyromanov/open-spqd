@@ -168,7 +168,7 @@ class SoundMask:
             'NOT': op_not,
             'FIRST SEC': op_first_sec,
             'LAST SEC': op_last_sec,
-            'DELAY SEC': op_delay_sec,
+            'PAUSE SEC': op_delay_sec,
             'EVERY SEC': op_every_sec,
             'VOLUME ABOVE': op_volume_above,
             'VOLUME BELOW': op_volume_below,
@@ -179,7 +179,7 @@ class SoundMask:
         self.callbacks = callbacks
 
     def to_instructions(self, expression: str) -> List[str]:
-        instructions: List[str] = ['DELAY SEC 0.1']
+        instructions: List[str] = ['PAUSE SEC 0.1']
         buffer = ''
 
         def commit() -> None:
@@ -214,7 +214,7 @@ class SoundMask:
                     instruction = f'LAST SEC {value}'
                 case '||':
                     value = float(value)
-                    instruction = f'DELAY SEC {value}'
+                    instruction = f'PAUSE SEC {value}'
                 case '**':
                     value = float(value)
                     instruction = f'EVERY SEC {value}'
